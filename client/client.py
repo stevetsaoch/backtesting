@@ -11,13 +11,11 @@ class ConnectionInfo(BaseModel):
 
 
 class ConnectionPool:
-    def __init__(self, connection_info: ConnectionInfo, size=32):
+    def __init__(self, connection_info: ConnectionInfo, size=32, cooldown=8):
         self.pool: queue.Queue = queue.Queue(maxsize=size)
         self.connection_info = connection_info
         for cid in range(1, size + 1):
-            print(cid)
             self.pool.put(self._new_connection(cid))
-            print(cid)
 
     def _new_connection(self, client_id: int):
         ib = IB()
