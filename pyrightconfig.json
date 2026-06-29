@@ -1,0 +1,5 @@
+{
+  "venvPath": ".",
+  "venv": ".venv",
+  "extraPaths": ["./sources/IBJts/source/pythonclient"]
+}

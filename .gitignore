@@ -8,3 +8,15 @@ wheels/
 
 # Virtual environments
 .venv
+
+# data
+data/
+
+# Env
+env/
+
+# Logs
+logs/
+
+# sources
+sources/

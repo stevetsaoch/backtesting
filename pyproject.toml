@@ -4,4 +4,19 @@ version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.13"
-dependencies = []
+dependencies = [
+    "ib-async>=2.1.0",
+    "ibapi",
+    "loguru>=0.7.3",
+    "pandas>=3.0.3",
+    "path>=17.1.1",
+    "psycopg>=3.3.4",
+    "psycopg-pool>=3.3.1",
+    "pydantic>=2.13.4",
+    "pyright>=1.1.411",
+    "requests>=2.34.2",
+    "toml>=0.10.2",
+]
+
+[tool.uv.sources]
+ibapi = { path = "sources/IBJts/source/pythonclient", editable = true }
