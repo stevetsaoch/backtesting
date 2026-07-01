@@ -28,3 +28,17 @@ class PacingController:
     def reset(self):
         with self._lock:
             self._deadline = time.monotonic() + self._cooldown
+
+
+class RequestIdManager:
+    def __init__(self):
+        self.request_id = 1
+        self._lock = threading.Lock()
+
+    def acquire(self) -> int:
+        with self._lock:
+            request_id = self.request_id
+            self.request_id += 1
+            return request_id
+
+        pass

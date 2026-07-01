@@ -1,20 +1,13 @@
 import queue
 from ib_async import IB
-from pydantic import BaseModel
+from schemas import IBConnectionInfo
 
 
-class ConnectionInfo(BaseModel):
-    host: str
-    port: int
-    timeout: int = 5
-    readonly: bool = True
-
-
-class ConnectionPool:
-    def __init__(self, connection_info: ConnectionInfo, size=32, cooldown=8):
-        self.pool: queue.Queue = queue.Queue(maxsize=size)
+class IBConnectionPool:
+    def __init__(self, connection_info: IBConnectionInfo):
         self.connection_info = connection_info
-        for cid in range(1, size + 1):
+        self.pool: queue.Queue = queue.Queue(maxsize=connection_info.size)
+        for cid in range(1, connection_info.size + 1):
             self.pool.put(self._new_connection(cid))
 
     def _new_connection(self, client_id: int):
@@ -28,7 +21,7 @@ class ConnectionPool:
         )
         return ib
 
-    def get(self):
+    def get(self) -> IB | None:
         try:
             conn = self.pool.get_nowait()
             if not conn.isConnected():
@@ -39,9 +32,9 @@ class ConnectionPool:
                 conn = self._new_connection(conn.client.clientId)
             return conn
         except queue.Empty:
-            pass
+            return
 
-    def release(self, conn):
+    def release(self, conn: IB):
         if conn.isConnected():
             self.pool.put(conn)
         else:
@@ -54,5 +47,5 @@ class ConnectionPool:
 
 
 if __name__ == "__main__":
-    conn_pool = ConnectionPool(ConnectionInfo(host="127.0.0.1", port=4002))
+    conn_pool = IBConnectionPool(IBConnectionInfo(host="127.0.0.1", port=4002, size=10))
     conn = conn_pool.get()

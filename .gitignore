@@ -20,3 +20,6 @@ logs/
 
 # sources
 sources/
+
+# other
+.DS_Store
