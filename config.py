@@ -1,5 +1,5 @@
 import toml
-from schemas import ProjectConfig, PostgresConfig, IBConnectionInfo
+from schemas import ProjectConfig, PostgresConfig, IBConnectionInfo, SymbolInfo
 
 ENV_PATH = "./env/config.toml"
 
@@ -15,3 +15,4 @@ if PROJECT_CONFIG.flag == "paper" and PROJECT_CONFIG.proxy == "gateway":
         port=config["IB"]["paper_gateway_port"],
         size=config["IB"]["size"],
     )
+SYMBOL_CONFIG = SymbolInfo(**config["symbol"])

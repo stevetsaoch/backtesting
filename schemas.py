@@ -192,3 +192,7 @@ class IBConnectionInfo(BaseModel):
     size: int
     timeout: int = 5
     readonly: bool = True
+
+
+class SymbolInfo(BaseModel):
+    ib_us_stock_etf: str
