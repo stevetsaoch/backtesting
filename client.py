@@ -1,51 +1,41 @@
 import queue
-from ib_async import IB
-from schemas import IBConnectionInfo
+from schemas import IBConnectionPoolInfo, IBConnectionInfo
 
 
 class IBConnectionPool:
-    def __init__(self, connection_info: IBConnectionInfo):
-        self.connection_info = connection_info
-        self.pool: queue.Queue = queue.Queue(maxsize=connection_info.size)
-        for cid in range(1, connection_info.size + 1):
+    def __init__(self, connection_pool_info: IBConnectionPoolInfo):
+        self.connection_pool_info = connection_pool_info
+        self.pool: queue.Queue = queue.Queue(maxsize=connection_pool_info.size)
+        for cid in range(1, connection_pool_info.size + 1):
             self.pool.put(self._new_connection(cid))
+        self.count = self.connection_pool_info.size
 
     def _new_connection(self, client_id: int):
-        ib = IB()
-        ib.connect(
-            self.connection_info.host,
-            self.connection_info.port,
-            clientId=client_id,
-            timeout=self.connection_info.timeout,
-            readonly=self.connection_info.readonly,
+        ib = IBConnectionInfo(
+            host=self.connection_pool_info.host,
+            port=self.connection_pool_info.port,
+            timeout=self.connection_pool_info.timeout,
+            readonly=self.connection_pool_info.readonly,
+            client_id=client_id,
         )
         return ib
 
-    def get(self) -> IB | None:
+    def get(self) -> IBConnectionInfo | None:
         try:
-            conn = self.pool.get_nowait()
-            if not conn.isConnected():
-                try:
-                    conn.disconnect()
-                except:
-                    pass
-                conn = self._new_connection(conn.client.clientId)
-            return conn
+            conn_info = self.pool.get_nowait()
+            self.count -= 1
+            return conn_info
         except queue.Empty:
             return
 
-    def release(self, conn: IB):
-        if conn.isConnected():
-            self.pool.put(conn)
-        else:
-            self.pool.put(self._new_connection(conn.client.clientId))
-
-    def close_all(self):
-        while not self.pool.empty():
-            conn = self.pool.get_nowait()
-            conn.disconnect()
+    def release(self, conn_info: IBConnectionInfo):
+        self.pool.put(conn_info)
+        self.count += 1
 
 
 if __name__ == "__main__":
-    conn_pool = IBConnectionPool(IBConnectionInfo(host="127.0.0.1", port=4002, size=10))
+    conn_pool = IBConnectionPool(
+        IBConnectionPoolInfo(host="127.0.0.1", port=4002, size=10)
+    )
     conn = conn_pool.get()
+    print(conn)

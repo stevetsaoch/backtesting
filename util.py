@@ -1,3 +1,5 @@
+import os
+import re
 import threading
 import time
 
@@ -41,4 +43,28 @@ class RequestIdManager:
             self.request_id += 1
             return request_id
 
-        pass
+
+def find_files(root_dir, pattern):
+    regex = re.compile(pattern)
+    result = []
+    stack = [root_dir]
+
+    while stack:
+        current_dir = stack.pop()
+        try:
+            entries = os.listdir(current_dir)
+        except PermissionError:
+            continue
+        except FileNotFoundError as e:
+            continue
+
+        for entry in entries:
+            full_path = os.path.join(current_dir, entry)
+
+            if os.path.isdir(full_path):
+                stack.append(full_path)
+            elif os.path.isfile(full_path):
+                if regex.search(entry):
+                    result.append(full_path)
+
+    return result

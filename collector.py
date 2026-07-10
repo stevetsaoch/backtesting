@@ -1,11 +1,15 @@
+import threading
+import asyncio
 import os
 import pandas as pd
 from ib_async import IB, util, BarDataList
-from schemas import IBHistoricalBarRequest
+from schemas import IBHistoricalBarRequest, IBConnectionInfo
 
 
 class Collector:
-    def __init__(self, conn: IB, task: IBHistoricalBarRequest, data_dir: str):
+    def __init__(
+        self, conn_info: IBConnectionInfo, task: IBHistoricalBarRequest, data_dir: str
+    ):
         self.task = task
         self.data_filetype = ".parquet"
         self.file_name = "|".join(
@@ -18,8 +22,19 @@ class Collector:
         )
         self.data_dir = f"{data_dir}/{self.task.contract.symbol}/"
         self.done = False
-        self.conn = conn
+        self.conn_info = conn_info
         self.data = []
+
+    def _setup_connection(self) -> IB:
+        ib = IB()
+        conn = ib.connect(
+            host=self.conn_info.host,
+            port=self.conn_info.port,
+            clientId=self.conn_info.client_id,
+            timeout=self.conn_info.timeout,
+            readonly=self.conn_info.readonly,
+        )
+        return conn
 
     def _mkdir(self):
         if os.path.exists(self.data_dir):
@@ -35,8 +50,9 @@ class Collector:
         df.to_parquet(f"{self.data_dir}{self.file_name}{self.data_filetype}")
 
     def run(self):
+        conn = self._setup_connection()
         try:
-            data = self.conn.reqHistoricalData(
+            data = conn.reqHistoricalData(
                 contract=self.task.contract,
                 endDateTime=self.task.endDateTime,
                 durationStr=self.task.durationStr,
@@ -50,3 +66,5 @@ class Collector:
             return data[0]
         except Exception as e:
             return
+        finally:
+            conn.disconnect()

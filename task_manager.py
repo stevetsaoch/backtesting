@@ -1,19 +1,19 @@
 import time
 import datetime
 import duckdb
+import log_config
+from loguru import logger
 import pandas as pd
-from ib_async import IB
 from pathlib import Path
 from dateutil.relativedelta import relativedelta
-from client import IBConnectionPool
 from collector import Collector
 from util import PacingController
 from schemas import (
     ProjectConfig,
     HistoricalBarRequest,
     HistoricalBarTask,
-    IBHistoricalBarRequest,
     HistoricalBar,
+    IBConnectionInfo,
 )
 
 
@@ -22,17 +22,16 @@ class HistoricalBarTaskManager:
         self,
         request: HistoricalBarRequest,
         config: ProjectConfig,
-        ib_connection_pool: IBConnectionPool,
+        ib_connection_info: IBConnectionInfo,
         pacing_controller: PacingController,
     ):
         self.request = request
         self.config = config
         self.task_file_path = Path(
-            f"{self.config.data_dir}{self.request.request_name()}{self.config.task_filetype}"
+            f"{self.config.task_dir}{self.request.request_name()}{self.config.task_filetype}"
         )
-        self.ib_connection_pool = ib_connection_pool
+        self.ib_connection_info = ib_connection_info
         self.pacing_controller = pacing_controller
-        self.conn: IB | None = None
         self.latest_task: HistoricalBarTask | None = None
 
     def _normalize_duration_unit(self):
@@ -58,9 +57,15 @@ class HistoricalBarTaskManager:
         if self.request.bar_unit == "day":
             bs = "day"
         if self.request.bar_unit == "hour":
-            bs = "hours"
+            if self.request.bar_size == 1:
+                bs = "hour"
+            else:
+                bs = "hours"
         if self.request.bar_unit == "minute":
-            bs = "mins"
+            if self.request.bar_size == 1:
+                bs = "min"
+            else:
+                bs = "mins"
         if self.request.bar_unit == "second":
             bs = "secs"
         return bs
@@ -90,15 +95,18 @@ class HistoricalBarTaskManager:
         end_datetime = datetime.datetime.combine(
             latest_datetime, datetime.datetime.min.time()
         )
-        if (
-            self.request.duration_unit == "year"
-            and self.request.bar_unit == "minute"
-            and self.request.bar_size in [1, 5]
-        ):
-            duration = "31 D"
+        if self.request.duration_unit == "year":
+            if self.request.bar_unit == "minute":
+                if self.request.bar_size == 1:
+                    duration = "1 M"
+                if self.request.bar_size == 5:
+                    duration = "6 M"
+                return end_datetime, duration
+
         if self.request.duration_unit == "year" and self.request.bar_unit == "day":
             duration = f"{self.request.duration_size} {self._normalize_duration_unit()}"
-
+        else:
+            duration = f"{self.request.duration_size} {self._normalize_duration_unit()}"
         return end_datetime, duration
 
     def _init_task(self, latest_datetime: datetime.datetime):
@@ -186,15 +194,14 @@ class HistoricalBarTaskManager:
         self._update_latest_task(latest_task)
 
         while (task := self._decide_next_step(self.latest_task)) is not None:
+            print(f"{task} start running. starting at {time.monotonic()}")
             ib_task = task.to_ib_request()
 
             # start and run a collector
-            while (conn := self.ib_connection_pool.get()) is None:
-                time.sleep(1)
-
-            self.conn = conn
             collector = Collector(
-                conn=self.conn, task=ib_task, data_dir=self.config.data_dir
+                conn_info=self.ib_connection_info,
+                task=ib_task,
+                data_dir=self.config.data_dir,
             )
 
             # get pacing permission
@@ -202,44 +209,24 @@ class HistoricalBarTaskManager:
                 time.sleep(0.5)
             result = collector.run()
 
-            # release connection
-            self.ib_connection_pool.release(collector.conn)
-            self.conn = None
-
-            # update task
-            task.done = True
-            self._update_task_status(task.endDateTime)
-            self._update_latest_task(task)
-
-            if result is None:
+            # update task and record error
+            if result:
+                task.done = True
+                self._update_task_status(task.endDateTime)
+                self._update_latest_task(task)
+                print(f"-- {task.symbol} -- task success! ending at {time.monotonic()}")
+            elif result is None:
+                self._update_latest_task(task)
+                logger.bind(
+                    payload=task.model_dump(mode="json"), event="task_failed"
+                ).error(f"-- {task.symbol} -- task fail!")
                 break
 
         self.stop()
 
     def stop(self):
-        if self.conn is not None:
-            self.ib_connection_pool.release(self.conn)
-        return
+        return self.ib_connection_info
 
 
 if __name__ == "__main__":
-    t = HistoricalBarRequest(
-        symbol="AAPL",
-        market="stock",
-        end_datetime="2026-01-01 00:00:00",
-        bar_unit="day",
-        bar_size=1,
-        duration_unit="year",
-        duration_size=10,
-        time_zone="America/New_York",
-    )
-    from config import PROJECT_CONFIG
-    from container import IB_CONNECTION_POOL, PACING_CONTROLLER
-
-    htm = HistoricalBarTaskManager(
-        request=t,
-        config=PROJECT_CONFIG,
-        ib_connection_pool=IB_CONNECTION_POOL,
-        pacing_controller=PACING_CONTROLLER,
-    )
-    htm.run()
+    pass

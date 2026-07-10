@@ -13,3 +13,13 @@ logger.add(
     encoding="utf8",
     level="DEBUG",
 )
+
+logger.add(
+    "logs/structured_{time:YYYY-MM-DD}.jsonl",
+    rotation="10 MB",
+    retention="30 days",
+    encoding="utf8",
+    level="DEBUG",
+    serialize=True,
+    filter=lambda r: "payload" in r["extra"],
+)
