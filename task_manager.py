@@ -128,8 +128,21 @@ class HistoricalBarTaskManager:
         if lt.done == True:
             # retrieve latest bar
             latest_bar = self._retrieve_latest_bar(lt)
+
+            # need clarify under what condition will trigger this
             if latest_bar is None:
                 return
+
+            # update task status if there is no further step to take
+            if self.request.duration_unit == "day":
+                # possible trigger error due to date format difference
+                if (
+                    self.request.end_datetime
+                    - relativedelta(days=self.request.duration_size)
+                    >= latest_bar.date
+                ):
+                    self._update_task_status(lt.endDateTime)
+                    return
 
             # terminate next request for long period duration
             if (
@@ -150,6 +163,7 @@ class HistoricalBarTaskManager:
                     return task
                 else:
                     return
+
         if lt.done == False:
             return lt
 

@@ -10,6 +10,17 @@ from pydantic import (
     computed_field,
 )
 from ib_async import Contract, Stock
+from nautilus_trader.model.instruments import Equity
+from nautilus_trader.model.identifiers import InstrumentId, Symbol
+from nautilus_trader.model.objects import Price, Quantity
+from nautilus_trader.model import Bar as NauBar
+from nautilus_trader.model.currencies import USD
+from nautilus_trader.config import (
+    BacktestVenueConfig,
+    BacktestDataConfig,
+    ImportableFillModelConfig,
+    ImportableFeeModelConfig,
+)
 
 
 class USStockDefault(BaseModel):
@@ -59,7 +70,7 @@ class IBHistoricalBarRequest(BaseModel):
 class HistoricalBarBase(BaseModel):
     symbol: str
     market: Literal["stock", "crypto"]
-    exchange: Literal["SMART"] = "SMART"
+    exchange: Literal["AMEX", "SMART"] = "SMART"
     currency: Literal["USD"] = "USD"
     whatToShow: str = "TRADES"
     useRTH: bool = True
@@ -499,6 +510,8 @@ class ProjectConfig(BaseModel):
     data_filetype: str
     index_path: str
     universal_equity_dir: str
+    catalog_mission_dir: str
+    catalog_mission_filetype: str
     cooldown: int
     flag: Literal["paper", "live"]
     proxy: Literal["gateway", "tws"]
@@ -521,6 +534,184 @@ class IBConnectionInfo(IBInfo):
 
 class SymbolInfo(BaseModel):
     ib_us_stock_etf_path: str
+
+
+class NautilusConfig(BaseModel):
+    catalog_path: str
+    venue: str
+
+
+class NautilusEquityTask(BaseModel):
+    raw_data_path: str
+    catalog_path: str
+    symbol: str
+    venue: str
+    currency: Literal["USD"]
+    price_precision: int
+    price_increment: float
+    lot_size: int
+    ts_event: int
+    ts_init: int
+    done: bool = False
+
+    def to_equity(self) -> Equity:
+        e = Equity(
+            instrument_id=InstrumentId.from_str(f"{self.symbol}.{self.venue}"),
+            raw_symbol=Symbol(f"{self.symbol}"),
+            currency=self._str_to_currency(),
+            price_precision=self.price_precision,
+            price_increment=Price.from_str(str(self.price_increment)),
+            lot_size=Quantity.from_int(self.lot_size),
+            ts_event=self.ts_event,
+            ts_init=self.ts_init,
+        )
+        return e
+
+    def _str_to_currency(self):
+        if self.currency == "USD":
+            return USD
+
+
+class NautilusInstrumentId(BaseModel):
+    symbol: str
+    venue: str
+
+    def to_string(self):
+        return f"{self.symbol}.{self.venue}"
+
+
+class NautilusBarType(BaseModel):
+    instrument: NautilusInstrumentId
+    bar_unit: Literal["year", "month", "day", "minute"]
+    bar_size: int
+    l1_type: Literal["bid", "ask", "trade"]
+    external: bool
+    extra_bar_pair: (
+        list[
+            tuple[
+                int,
+                Literal["year", "month", "day", "minute"],
+            ]
+        ]
+    ) | None = None
+    aggregated_bar_pair: (
+        list[
+            tuple[
+                int,
+                Literal["year", "month", "day", "minute"],
+            ]
+        ]
+    ) | None = None
+
+    def to_string(self):
+        if self.l1_type == "trade":
+            lt = "LAST"
+
+        if self.external:
+            source = "EXTERNAL"
+        else:
+            source = "INTERNAL"
+        symbol = self.instrument.symbol.upper()
+        venue = self.instrument.venue.upper()
+        bar_unit = self.bar_unit.upper()
+        bt = f"{symbol}.{venue}-{str(self.bar_size)}-{bar_unit}-{lt}-{source}"
+        return bt
+
+    def to_extra_string(self):
+        bts = []
+        if self.l1_type == "trade":
+            lt = "LAST"
+
+        if self.external:
+            source = "EXTERNAL"
+        else:
+            source = "INTERNAL"
+        symbol = self.instrument.symbol.upper()
+        venue = self.instrument.venue.upper()
+        for bp in self.extra_bar_pair:
+            bar_unit = bp[1].upper()
+            # hard code
+            bt = f"{symbol}.{venue}-{str(bp[0])}-{bar_unit}-{lt}-EXTERNAL"
+            bts.append(bt)
+        return bts
+
+    def to_aggregator_string(self):
+        bts = []
+        if self.l1_type == "trade":
+            lt = "LAST"
+
+        if self.external:
+            source = "EXTERNAL"
+        else:
+            source = "INTERNAL"
+        symbol = self.instrument.symbol.upper()
+        venue = self.instrument.venue.upper()
+        bar_unit = self.bar_unit.upper()
+        for bp in self.aggregated_bar_pair:
+            aggregated_bar_unit = bp[1].upper()
+            # hard code
+            bt = f"{symbol}.{venue}-{str(bp[0])}-{aggregated_bar_unit}-{lt}-INTERNAL@{str(self.bar_size)}-{bar_unit}-{source}"
+            bts.append(bt)
+        return bts
+
+
+class VenueConfig(BaseModel):
+
+    name: str
+    oms_type: str
+    account_type: str
+    base_currency: str
+    starting_balances: int
+    # fill model
+    prob_fill_on_limit: float
+    prob_slippage: float
+    random_seed: int
+    # fee model
+    fee_model_path: str | None = None
+    fee_model_config_path: str | None = None
+
+    def to_backtest_venue_config(self):
+        bvc = BacktestVenueConfig(
+            name=self.name,
+            oms_type=self.oms_type,
+            account_type=self.account_type,
+            base_currency=self.base_currency,
+            starting_balances=[f"{str(self.starting_balances)} {self.base_currency}"],
+            fill_model=ImportableFillModelConfig(
+                fill_model_path="nautilus_trader.backtest.models:FillModel",
+                config_path="nautilus_trader.config:FillModelConfig",
+                config={
+                    "prob_fill_on_limit": self.prob_fill_on_limit,
+                    "prob_slippage": self.prob_slippage,
+                    "random_seed": self.random_seed,
+                },
+            ),
+            fee_model=ImportableFeeModelConfig(
+                fee_model_path=self.fee_model_path,
+                config_path=self.fee_model_config_path,
+                config={},
+            ),
+        )
+        return bvc
+
+
+class DataConfig(BaseModel):
+    instrument: NautilusInstrumentId
+    catalog_path: str
+    data_cls: str
+    start_time: str | datetime.datetime
+    end_time: str | datetime.datetime
+
+    def to_backtest_data_config(self) -> BacktestDataConfig:
+
+        btdf = BacktestDataConfig(
+            catalog_path=self.catalog_path,
+            data_cls=NauBar if self.data_cls == "bar" else None,
+            instrument_id=self.instrument.to_string(),
+            start_time=self.start_time,
+            end_time=self.end_time,
+        )
+        return btdf
 
 
 if __name__ == "__main__":

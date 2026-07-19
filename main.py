@@ -1,6 +1,5 @@
-import time
-import pandas as pd
 import datetime
+import pandas as pd
 from dateutil.relativedelta import relativedelta
 from container import IB_CONNECTION_POOL, PACING_CONTROLLER
 from config import PROJECT_CONFIG
@@ -10,7 +9,7 @@ from util import find_files
 
 files = find_files(
     PROJECT_CONFIG.universal_equity_dir,
-    pattern=r".*(\|taal\|4M\|tart\|0\.8\|aul\|20\|all\|10\|art\|0\.8\.parquet)",
+    pattern=r".*(\|taal\|8M\|tart\|0\.5\|aul\|50\|all\|40\|art\|0\.8\.parquet)",
 )
 
 for f in files:
@@ -20,7 +19,7 @@ for f in files:
     bar_unit = "minute"
     bar_size = 1
     duration_unit = "day"
-    duration_size = 23
+    duration_size = 25
     time_zone = "America/New_York"
     mission_name = "|".join(
         [

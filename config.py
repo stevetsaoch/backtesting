@@ -1,5 +1,12 @@
 import toml
-from schemas import ProjectConfig, PostgresConfig, IBConnectionPoolInfo, SymbolInfo
+from schemas import (
+    ProjectConfig,
+    PostgresConfig,
+    IBConnectionPoolInfo,
+    SymbolInfo,
+    NautilusConfig,
+    VenueConfig,
+)
 
 ENV_PATH = "./env/config.toml"
 
@@ -15,4 +22,12 @@ if PROJECT_CONFIG.flag == "paper" and PROJECT_CONFIG.proxy == "gateway":
         port=config["IB"]["paper_gateway_port"],
         size=config["IB"]["size"],
     )
+if PROJECT_CONFIG.flag == "paper" and PROJECT_CONFIG.proxy == "tws":
+    IB_CONFIG = IBConnectionPoolInfo(
+        host=config["IB"]["host"],
+        port=config["IB"]["paper_tws_port"],
+        size=config["IB"]["size"],
+    )
 SYMBOL_CONFIG = SymbolInfo(**config["symbol"])
+NAUTILUS_CONFIG = NautilusConfig(**config["nautilus"])
+VENUE_CONFIG = VenueConfig(**config["venue"])

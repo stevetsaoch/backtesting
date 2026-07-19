@@ -117,10 +117,10 @@ if __name__ == "__main__":
     start_date = datetime.date(2019, 6, 1)
     end_date = start_date + relativedelta(months=ref_period)
     total_amount_average_upper_limit = 10000000000.0
-    total_amount_average_lower_limit = 4000000.0
-    total_amount_ratio_threshold = 0.8
-    average_upper_limit = 20.0
-    average_lower_limit = 10.0
+    total_amount_average_lower_limit = 8000000.0
+    total_amount_ratio_threshold = 0.5
+    average_upper_limit = 50.0
+    average_lower_limit = 40.0
     average_ratio_threshold = 0.8
 
     while end_date <= final_date:

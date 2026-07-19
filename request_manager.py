@@ -102,9 +102,10 @@ class RequestManager:
         self.stop()
 
     def stop(self):
-        for tc in self.symbol_conn_thread_pair.values():
-            tc[0].join()
-            self.ib_connection_pool.release(tc[1])
+        for k, v in self.symbol_conn_thread_pair.items():
+            v[0].join()
+            self.ib_connection_pool.release(v[1])
+            self._update_requests(k)
         return
 
 
