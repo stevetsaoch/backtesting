@@ -161,6 +161,12 @@ class DataTransformer:
                     data_sets = self._normalize_timestamp(data)
 
                 for ds in data_sets:
+                    # remove timezone
+                    tz_cols = ds.select_dtypes(include=["datetimetz"]).columns
+                    if not tz_cols.empty:
+                        for col in tz_cols:
+                            ds[col] = ds[col].dt.tz_localize(None)
+
                     bar_type = BarType.from_str(self.bar_type.to_string())
                     wrangler = BarDataWrangler(bar_type=bar_type, instrument=eq)
                     if self.bar_type.bar_unit == "minute":
@@ -204,18 +210,8 @@ if __name__ == "__main__":
 
     root = Path("/Volumes/backtesting_main/data/")
     folders = [p for p in root.iterdir() if p.is_dir()]
-    r = duckdb.sql(
-        """
-        SELECT DISTINCT(symbol) FROM read_parquet(?);
-        """,
-        params=["/Volumes/backtesting_main/data/_missions/10_20_1min/*.parquet"],
-    ).df()
-
-    symbols = r["symbol"].to_list()
     for fo in folders:
         symbol = str(fo).split("/")[-1]
-        if symbol not in symbols:
-            continue
         venue = "SIM"
         currency = "USD"
         price_precision = 2
@@ -226,14 +222,14 @@ if __name__ == "__main__":
         el = []
         bt = NautilusBarType(
             instrument=NautilusInstrumentId(symbol=symbol, venue=venue),
-            bar_unit="day",
+            bar_unit="minute",
             bar_size=1,
             l1_type="trade",
             external=True,
         )
         files = find_files(
             str(fo),
-            pattern=r"^.*20 Y|1 day\.parquet$",
+            pattern=r"^.*\|1 min\.parquet$",
         )
         for f in files:
             e = NautilusEquityTask(

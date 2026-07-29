@@ -1,18 +1,24 @@
+import json
 import enum
 import datetime
 import zoneinfo
 import pandas as pd
+from functools import lru_cache
+from dataclasses import dataclass, field
 from typing import Literal, ClassVar, Any, Union
 from pydantic import (
     BaseModel,
-    model_validator,
     ConfigDict,
     computed_field,
+    model_validator,
+    create_model,
 )
 from ib_async import Contract, Stock
+from nautilus_trader.core.data import Data
 from nautilus_trader.model.instruments import Equity
 from nautilus_trader.model.identifiers import InstrumentId, Symbol
 from nautilus_trader.model.objects import Price, Quantity
+from nautilus_trader.model import Venue
 from nautilus_trader.model import Bar as NauBar
 from nautilus_trader.model.currencies import USD
 from nautilus_trader.config import (
@@ -538,7 +544,6 @@ class SymbolInfo(BaseModel):
 
 class NautilusConfig(BaseModel):
     catalog_path: str
-    venue: str
 
 
 class NautilusEquityTask(BaseModel):
@@ -582,81 +587,28 @@ class NautilusInstrumentId(BaseModel):
 
 class NautilusBarType(BaseModel):
     instrument: NautilusInstrumentId
-    bar_unit: Literal["year", "month", "day", "minute"]
-    bar_size: int
+    external_bar_unit: Literal["year", "month", "day", "minute"]
+    external_bar_size: int
     l1_type: Literal["bid", "ask", "trade"]
     external: bool
-    extra_bar_pair: (
-        list[
-            tuple[
-                int,
-                Literal["year", "month", "day", "minute"],
-            ]
-        ]
-    ) | None = None
-    aggregated_bar_pair: (
-        list[
-            tuple[
-                int,
-                Literal["year", "month", "day", "minute"],
-            ]
-        ]
-    ) | None = None
+    internal_bar_size: int | None = None
+    internal_bar_unit: Literal["year", "month", "day", "minute"] | None = None
 
-    def to_string(self):
+    def to_bar_type(self):
+        symbol = self.instrument.symbol.upper()
+        venue = self.instrument.venue.upper()
         if self.l1_type == "trade":
             lt = "LAST"
 
         if self.external:
-            source = "EXTERNAL"
-        else:
-            source = "INTERNAL"
-        symbol = self.instrument.symbol.upper()
-        venue = self.instrument.venue.upper()
-        bar_unit = self.bar_unit.upper()
-        bt = f"{symbol}.{venue}-{str(self.bar_size)}-{bar_unit}-{lt}-{source}"
+            bt = f"{symbol}.{venue}-{str(self.external_bar_size)}-{self.external_bar_unit.upper()}-{lt}-EXTERNAL"
+        if not self.external:
+            bt = f"{symbol}.{venue}-{str(self.internal_bar_size)}-{self.internal_bar_unit.upper()}-{lt}-INTERNAL@{str(self.external_bar_size)}-{self.external_bar_unit.upper()}-EXTERNAL"
+
         return bt
-
-    def to_extra_string(self):
-        bts = []
-        if self.l1_type == "trade":
-            lt = "LAST"
-
-        if self.external:
-            source = "EXTERNAL"
-        else:
-            source = "INTERNAL"
-        symbol = self.instrument.symbol.upper()
-        venue = self.instrument.venue.upper()
-        for bp in self.extra_bar_pair:
-            bar_unit = bp[1].upper()
-            # hard code
-            bt = f"{symbol}.{venue}-{str(bp[0])}-{bar_unit}-{lt}-EXTERNAL"
-            bts.append(bt)
-        return bts
-
-    def to_aggregator_string(self):
-        bts = []
-        if self.l1_type == "trade":
-            lt = "LAST"
-
-        if self.external:
-            source = "EXTERNAL"
-        else:
-            source = "INTERNAL"
-        symbol = self.instrument.symbol.upper()
-        venue = self.instrument.venue.upper()
-        bar_unit = self.bar_unit.upper()
-        for bp in self.aggregated_bar_pair:
-            aggregated_bar_unit = bp[1].upper()
-            # hard code
-            bt = f"{symbol}.{venue}-{str(bp[0])}-{aggregated_bar_unit}-{lt}-INTERNAL@{str(self.bar_size)}-{bar_unit}-{source}"
-            bts.append(bt)
-        return bts
 
 
 class VenueConfig(BaseModel):
-
     name: str
     oms_type: str
     account_type: str
@@ -699,6 +651,7 @@ class DataConfig(BaseModel):
     instrument: NautilusInstrumentId
     catalog_path: str
     data_cls: str
+    bar_types: list[str]
     start_time: str | datetime.datetime
     end_time: str | datetime.datetime
 
@@ -707,11 +660,182 @@ class DataConfig(BaseModel):
         btdf = BacktestDataConfig(
             catalog_path=self.catalog_path,
             data_cls=NauBar if self.data_cls == "bar" else None,
+            bar_types=self.bar_types,
             instrument_id=self.instrument.to_string(),
             start_time=self.start_time,
             end_time=self.end_time,
+            optimize_file_loading=True,
         )
         return btdf
+
+
+_TYPE_REGISTRY: dict[str, type] = {
+    "float": float,
+    "int": int,
+    "str": str,
+    "bool": bool,
+    "datetime.date": datetime.date,
+}
+
+
+@lru_cache(maxsize=None)
+def _build_data_model(
+    field_specs: tuple[tuple[str, str, float | None], ...],
+) -> type[BaseModel]:
+    fields = {
+        name: (_TYPE_REGISTRY[type_name], default)
+        for name, type_name, default in field_specs
+    }
+    return create_model(
+        "IndicatorData",
+        __config__=ConfigDict(validate_assignment=False),
+        **fields,
+    )
+
+
+@dataclass(frozen=True)
+class IndicatorDataField:
+    name: str
+    default: float | None
+    field_type: str
+    operator: Operator | None = field(default=None)
+    threshold: float | None = field(default=None)
+
+
+@dataclass(frozen=True)
+class IndicatorMeta:
+    """
+    Meta data class share to Actor and Strategy
+    """
+
+    name: str
+    bar_spec_requirements: list[str]
+    fields: list[IndicatorDataField]
+    # normally all indicator will be same.....
+    snapshot_time: datetime.time | None = field(default=None)
+
+    def __post_init__(self):
+        field_specs = tuple((f.name, f.field_type, f.default) for f in self.fields)
+        object.__setattr__(self, "data_model", _build_data_model(field_specs))
+
+
+@dataclass(frozen=True)
+class CustomDataMeta:
+    name: str
+    metadata: dict[str, str]
+
+
+@dataclass(frozen=True)
+class FilterCondition:
+    gap: tuple[Operator, float] | None = None
+    prior_day_change: tuple[Operator, float] | None = None
+    intraday_absolute_change: tuple[Operator, float] | None = None
+    volatility: tuple[Operator, float] | None = None
+    trading_value: tuple[Operator, float] | None = None
+    amplitude: tuple[Operator, float] | None = None
+
+    def to_mask(self, df: pd.DataFrame):
+        mask = pd.Series(True, index=df.index)
+
+        for field_name, value in vars(self).items():
+            if value is None:
+                continue
+
+            operator, threshold = value
+
+            if operator == Operator.GT:
+                mask &= df[field_name] > threshold
+            elif operator == Operator.GTE:
+                mask &= df[field_name] >= threshold
+            elif operator == Operator.LT:
+                mask &= df[field_name] < threshold
+            elif operator == Operator.LTE:
+                mask &= df[field_name] <= threshold
+
+        return mask
+
+    def to_condition_dict(self):
+        cd = {
+            field_name: value
+            for field_name, value in vars(self).items()
+            if value is not None
+        }
+        return cd
+
+    def to_condition_json_string(self):
+        jd = {
+            field_name: value
+            for field_name, value in vars(self).items()
+            if value is not None
+        }
+        return json.dumps(jd)
+
+
+@dataclass(frozen=True)
+class FilterConfig:
+    filter_conditions: FilterCondition
+    filter_info_calc_pacing: int
+    filter_freeze_time: datetime.time
+    filter_result_dir: str
+
+
+@dataclass(frozen=True)
+class TradingCondition:
+    prior_bar_clv: tuple[Operator, float] | None = None
+    latest_close_minus_filter_high: tuple[Operator, float] | None = None
+
+    def to_mask(self, df: pd.DataFrame):
+        mask = pd.Series(True, index=df.index)
+
+        for field_name, value in vars(self).items():
+            if value is None:
+                continue
+
+            operator, threshold = value
+
+            if operator == Operator.GT:
+                mask &= df[field_name] > threshold
+            elif operator == Operator.GTE:
+                mask &= df[field_name] >= threshold
+            elif operator == Operator.LT:
+                mask &= df[field_name] < threshold
+            elif operator == Operator.LTE:
+                mask &= df[field_name] <= threshold
+
+        return mask
+
+    def to_condition_dict(self):
+        cd = {
+            field_name: value
+            for field_name, value in vars(self).items()
+            if value is not None
+        }
+        return cd
+
+    def to_condition_json_string(self):
+        jd = {
+            field_name: value
+            for field_name, value in vars(self).items()
+            if value is not None
+        }
+        return json.dumps(jd)
+
+
+@dataclass(frozen=True)
+class TradingConfig:
+    trading_conditions: TradingCondition
+    start_trading_time: datetime.time
+    trading_info_calc_pacing: int
+    max_open_order: int
+    max_value_per_order: float
+    daily_maximum_lost: float
+    trading_log_dir: str
+    signal_log_dir: str
+
+
+@dataclass(frozen=True)
+class AccountConfig:
+    venue: Venue
 
 
 if __name__ == "__main__":
