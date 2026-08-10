@@ -73,7 +73,6 @@ class IntradayIndicator(BaseIndicator):
             self.latest_data.current_low = bar_low
 
     def _update_amplitude(self):
-        print(self.latest_data)
         if (
             self.latest_data.current_high is None
             or self.latest_data.current_low is None

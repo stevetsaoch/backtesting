@@ -2,6 +2,7 @@ import json
 import enum
 import datetime
 import zoneinfo
+from nautilus_trader.backtest.config import ImportableLatencyModelConfig
 import pandas as pd
 from functools import lru_cache
 from dataclasses import dataclass, field
@@ -14,7 +15,6 @@ from pydantic import (
     create_model,
 )
 from ib_async import Contract, Stock
-from nautilus_trader.core.data import Data
 from nautilus_trader.model.instruments import Equity
 from nautilus_trader.model.identifiers import InstrumentId, Symbol
 from nautilus_trader.model.objects import Price, Quantity
@@ -26,6 +26,7 @@ from nautilus_trader.config import (
     BacktestDataConfig,
     ImportableFillModelConfig,
     ImportableFeeModelConfig,
+    ImportableLatencyModelConfig,
 )
 
 
@@ -621,6 +622,7 @@ class VenueConfig(BaseModel):
     # fee model
     fee_model_path: str | None = None
     fee_model_config_path: str | None = None
+    base_latency_nanos: int | None = None
 
     def to_backtest_venue_config(self):
         bvc = BacktestVenueConfig(
@@ -629,6 +631,11 @@ class VenueConfig(BaseModel):
             account_type=self.account_type,
             base_currency=self.base_currency,
             starting_balances=[f"{str(self.starting_balances)} {self.base_currency}"],
+            latency_model=ImportableLatencyModelConfig(
+                latency_model_path="nautilus_trader.backtest.models:LatencyModel",
+                config_path="nautilus_trader.config:LatencyModelConfig",
+                config={"base_latency_nanos": self.base_latency_nanos},
+            ),
             fill_model=ImportableFillModelConfig(
                 fill_model_path="nautilus_trader.backtest.models:FillModel",
                 config_path="nautilus_trader.config:FillModelConfig",
