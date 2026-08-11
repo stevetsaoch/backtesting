@@ -1,18 +1,19 @@
 import datetime
 import pandas as pd
 from collections import defaultdict
+from functools import singledispatchmethod
 
 from nautilus_trader.common.actor import Actor
 from nautilus_trader.config import ActorConfig
 from nautilus_trader.model import InstrumentId, BarType, Bar
 from nautilus_trader.model.enums import BarAggregation
 from nautilus_trader.indicators.base import Indicator
-from nautilus_trader.core.datetime import unix_nanos_to_dt
 
 from mixin import DailyResetMixin
 from indicator.indicator import IndicatorHub
-from custom_data.custom_data import PublishableData, IntradayDataFrame
-from schemas import IndicatorMeta
+from schemas import SessionConfig
+from indicator.field import IndicatorMeta, TYPE_REGISTRY
+from message import IntradayDataFrameResponse, IntradayDataFrameRequest
 
 
 class ConsolidationAndBreakoutIndicatorManageActorConfig(ActorConfig, frozen=True):
@@ -23,6 +24,9 @@ class ConsolidationAndBreakoutIndicatorManageActorConfig(ActorConfig, frozen=Tru
     consolidation_end: (
         datetime.time
     )  # time point which decide when the consolidation period end
+    session_config: SessionConfig
+    msg_enpoint: str
+    msg_outbound_endpoint: str
 
 
 class ConsolidationAndBreakoutIndicatorManageActor(Actor, DailyResetMixin):
@@ -31,9 +35,16 @@ class ConsolidationAndBreakoutIndicatorManageActor(Actor, DailyResetMixin):
         self.indicator_instrument_map: dict[str, dict[InstrumentId, Indicator]] = (
             defaultdict(dict)
         )
+        self._empty_dataframe = self._build_empty_dataframe()
         self._current_session_time: datetime.time | None = None
 
     def on_start(self):
+        self._init_daily_reset()
+        self._register_daily_reset(self._on_daily_reset)
+        self._registry_indicator()
+        for bts in self.config.bar_types.values():
+            for bt in bts:
+                self.subscribe_bars(bt)
         # reset
         self.clock.set_timer(
             name="daily_reset",
@@ -43,45 +54,22 @@ class ConsolidationAndBreakoutIndicatorManageActor(Actor, DailyResetMixin):
             interval=datetime.timedelta(days=1),
             callback=self._check_and_reset,
         )
-
-        self._init_daily_reset()
-        self.register_daily_reset(self._reset)
-        self._registry_indicator()
-        for bts in self.config.bar_types.values():
-            for bt in bts:
-                self.subscribe_bars(bt)
+        # request / response register
+        self.msgbus.register(
+            endpoint=self.config.msg_enpoint,
+            handler=self._send_dataframe,
+        )
 
     def on_bar(self, bar: Bar):
         if bar.bar_type.spec.aggregation == BarAggregation.DAY:
-            pass
-        if self._should_publish_dataframe(bar):
-            latest_data = self._build_dataframe()
-            self._publish(
-                data=IntradayDataFrame(
-                    data=latest_data,
-                    ts_event=bar.ts_event,
-                    ts_init=self.clock.timestamp_ns(),
-                    snapshot=False,
-                )
-            )
-            snapshot_data = self._build_dataframe(snapshot=True)
-            self._publish(
-                data=IntradayDataFrame(
-                    data=snapshot_data,
-                    ts_event=bar.ts_event,
-                    ts_init=self.clock.timestamp_ns(),
-                    snapshot=True,
-                )
-            )
-        else:
-            pass
+            return
 
     def on_historical_data(self, data):
         pass
 
     def on_stop(self):
         print(self.indicator_instrument_map)
-        print(self._build_dataframe())
+        pass
 
     def _registry_indicator(self):
         # registry indicator
@@ -109,62 +97,66 @@ class ConsolidationAndBreakoutIndicatorManageActor(Actor, DailyResetMixin):
                 t_ind = indi(
                     bar_types=t_bts,
                     snapshot_time=self.config.consolidation_end,
-                    data_model=indm.data_model,
+                    field_configs=indm.field_configs,
                 )
                 self.indicator_instrument_map[indm.name][iid] = t_ind
-                self.register_daily_reset(
+                self._register_daily_reset(
                     t_ind.reset
                 )  # mixin method, register reset method for all indicator
                 for bt in t_bts:
                     self.register_indicator_for_bars(bt, t_ind)
 
+    def _build_empty_dataframe(self):
+        fields = {"instrument_id": pd.Series(dtype="string")}
+        for indm in self.config.indicator_meta_set:
+            for cfg in indm.field_configs:
+                field_type = TYPE_REGISTRY[cfg.field_type]
+                if field_type in (int, float, bool, str):
+                    dtype = field_type
+                elif field_type is datetime.datetime:
+                    dtype = "datetime64[ns]"
+                elif field_type in (
+                    datetime.time,
+                    datetime.date,
+                ):
+                    dtype = "object"
+
+                fields[cfg.name] = pd.Series(dtype=dtype)
+
+        # hard coded
+        return pd.DataFrame(fields)
+
     def _build_dataframe(self, snapshot: bool = False):
         """
         Build a dataframe by collecting data from all indicator.
-        Return None when any one of indicator return None
         """
-        df = pd.DataFrame({"instrument_id": pd.Series(dtype="string")})
+        df = self._empty_dataframe.copy(deep=True)
         for v in self.indicator_instrument_map.values():
             for iid, ind in v.items():
-                data = ind.get(
-                    snapshot=snapshot
-                )  # indicator method, return None or a BaseModel
-                if data is not None:
-                    data = data.dict()
-                    if str(iid) in df["instrument_id"].values:
-                        df.loc[df["instrument_id"] == str(iid), data.keys()] = (
-                            data.values()
-                        )
-                    else:
-                        df.loc[len(df), "instrument_id"] = str(iid)
-                        df.loc[df["instrument_id"] == str(iid), data.keys()] = (
-                            data.values()
-                        )
+                data = ind.get(snapshot=snapshot)
+                if str(iid) in df["instrument_id"].values:
+                    df.loc[df["instrument_id"] == str(iid), data.keys()] = data.values()
                 else:
-                    return None
+                    df.loc[len(df), "instrument_id"] = str(iid)
+                    df.loc[df["instrument_id"] == str(iid), data.keys()] = data.values()
         return df
 
-    def _should_publish_dataframe(self, bar) -> bool:
-        bar_time = unix_nanos_to_dt(bar.ts_init).time()
-        if bar_time < self.config.data_start_datetime.time():
-            return False
-        if self._current_session_time is None:
-            self._current_session_time = bar_time
-            return False
-        elif self._current_session_time == bar_time:
-            return False
-        elif self._current_session_time != bar_time:
-            # reset current time
-            self._current_session_time = bar_time
-            # publish data
-            return True
-        return False
+    @singledispatchmethod
+    def _dispatch_msg(self, msg) -> None:
+        self.log.warning(f"Unhandled custom data type: {type(msg).__name__}")
 
-    def _publish(self, data: PublishableData) -> None:
-        self.publish_data(data.data_type, data)
+    @_dispatch_msg.register
+    def _send_dataframe(self, msg: IntradayDataFrameRequest):
+        if msg.snapshot:
+            data = IntradayDataFrameResponse(
+                data=self._build_dataframe(snapshot=msg.snapshot), snapshot=msg.snapshot
+            )
+        else:
+            data = IntradayDataFrameResponse(
+                data=self._build_dataframe(snapshot=msg.snapshot), snapshot=msg.snapshot
+            )
 
-    def _reset(self):
-        pass
+        self.msgbus.send(endpoint=self.config.msg_outbound_endpoint, msg=data)
 
     def _check_and_reset(self, event) -> bool:
         date = self.clock.utc_now().date()
@@ -178,3 +170,6 @@ class ConsolidationAndBreakoutIndicatorManageActor(Actor, DailyResetMixin):
                 cb()
             return True
         return False
+
+    def _on_daily_reset(self):
+        self._current_session_time = None

@@ -1,20 +1,12 @@
-import json
 import enum
 import datetime
 import zoneinfo
-from nautilus_trader.backtest.config import ImportableLatencyModelConfig
 import pandas as pd
-from functools import lru_cache
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Literal, ClassVar, Any, Union
-from pydantic import (
-    BaseModel,
-    ConfigDict,
-    computed_field,
-    model_validator,
-    create_model,
-)
+from pydantic import BaseModel, ConfigDict, model_validator, field_serializer
 from ib_async import Contract, Stock
+from nautilus_trader.backtest.config import ImportableLatencyModelConfig
 from nautilus_trader.model.instruments import Equity
 from nautilus_trader.model.identifiers import InstrumentId, Symbol
 from nautilus_trader.model.objects import Price, Quantity
@@ -227,220 +219,15 @@ class Operator(str, enum.Enum):
     GTE_BETWEEN = "gte_between"
     LTE_BETWEEN = "lte_between"
 
-
-class Arithmetic(str, enum.Enum):
-    ADD = "add"
-    SUB = "sub"
-    MUL = "mul"
-    DIV = "div"
-
-
-class AggregatedArithmetic(str, enum.Enum):
-    AVG = "avg"
-    COUNT = "count"
-
-
-class CalculatedField(BaseModel):
-    fields: list[Field]
-    ariths: list[Arithmetic]
-
-    @computed_field
-    def field_name(self) -> str:
-        result = [
-            x
-            for pair in zip(
-                map(self._field_to_string, self.fields),
-                self.ariths,
-            )
-            for x in pair
-        ] + [self._field_to_string(self.fields[-1])]
-
-        return "_".join(result)
-
-    def _field_to_string(self, field: Field):
-        return field.value
-
-    def _arithmetic_to_string(self, arith: Arithmetic):
-        if arith == Arithmetic.ADD:
-            return "+"
-        if arith == Arithmetic.SUB:
-            return "-"
-        if arith == Arithmetic.MUL:
-            return "/"
-        if arith == Arithmetic.DIV:
-            return "*"
-
-    def _format_value(self, v):
-        if type(v) in [datetime.date, datetime.datetime]:
-            return f"'{v.isoformat()}'"
-        return v
-
-    def to_string(self):
-        result = [
-            x
-            for pair in zip(
-                map(self._field_to_string, self.fields),
-                map(self._arithmetic_to_string, self.ariths),
-            )
-            for x in pair
-        ] + [self._field_to_string(self.fields[-1])]
-        sql = " ".join(result) + " " + f"AS {self.field_name}"
-        return sql
-
-
-class CalculatedFieldGroup(BaseModel):
-    fields: list[CalculatedField]
-
-    def to_string(self):
-        sql = ", ".join([f.to_string() for f in self.fields])
-        return sql
-
-
-class AggregatedField(BaseModel):
-    field: Field
-    arith: AggregatedArithmetic
-
-    @computed_field
-    def field_name(self) -> str:
-        if self.arith == AggregatedArithmetic.COUNT:
-            return f"{AggregatedPrefix.COUNT.value}{self.field.value}"
-        if self.arith == AggregatedArithmetic.AVG:
-            return f"{AggregatedPrefix.AVG.value}{self.field.value}"
-
-    def _format_value(self, v):
-        if type(v) in [datetime.date, datetime.datetime]:
-            return f"'{v.isoformat()}'"
-        return v
-
-    def to_string(self):
-        if self.arith == AggregatedArithmetic.COUNT:
-            return f"COUNT({self.field.value}) as {self.field_name}"
-        if self.arith == AggregatedArithmetic.AVG:
-            return f"AVG({self.field.value}) as {self.field_name}"
-
-
-class AggregatedFieldGroup(BaseModel):
-    fields: list[AggregatedField]
-
-    def to_string(self):
-        sql = ", ".join([f.to_string() for f in self.fields])
-        return sql
-
-
-class Condition(BaseModel):
-    field: Field | CalculatedField | AggregatedField
-    value: list[float | datetime.date | datetime.datetime]
-    operator: Operator
-
-    def _format_value(self, v):
-        if type(v) in [datetime.date, datetime.datetime]:
-            return f"'{v.isoformat()}'"
-        return v
-
-    def to_string(self):
-        field_name = ""
-        if isinstance(self.field, Field):
-            field_name = self.field.value
-        elif isinstance(self.field, CalculatedField) or isinstance(
-            self.field, AggregatedField
-        ):
-            field_name = self.field.field_name
-
-        if len(self.value) == 2:
-            bv = self._format_value(max(self.value))
-            sv = self._format_value(min(self.value))
-        else:
-            v = self._format_value(self.value[0])
-
-        if self.operator == Operator.BETWEEN:
-            return f"({field_name} > {sv} AND {self.field.value} < {bv})"
-        if self.operator == Operator.EQ_BETWEEN:
-            return f"({field_name} >= {sv} AND {self.field.value} <= {bv})"
-        if self.operator == Operator.LTE_BETWEEN:
-            return f"({field_name} > {sv} AND {self.field.value} <= {bv})"
-        if self.operator == Operator.GTE_BETWEEN:
-            return f"({field_name} >= {sv} AND {self.field.value} < {bv})"
-        if self.operator == Operator.EQ:
-            return f"{field_name} = {v}"
-        if self.operator == Operator.GT:
-            return f"{field_name} > {v}"
-        if self.operator == Operator.GTE:
-            return f"{field_name} >= {v}"
-        if self.operator == Operator.LT:
-            return f"{field_name} < {v}"
-        if self.operator == Operator.LTE:
-            return f"{field_name} <= {v}"
-
-    @model_validator(mode="before")
-    @classmethod
-    def _validate_input(cls, data):
-        field = data.get("field")
-        v = data.get("value")
-        if field == Field.DATE:
-            for i in v:
-                if type(i) not in [datetime.date, datetime.datetime]:
-                    raise Exception(
-                        "date or datetime object is alllowed when field is date or datetime."
-                    )
-        else:
-            for i in v:
-                if type(i) in [datetime.date, datetime.datetime]:
-                    raise Exception(
-                        "date or datetime object is alllowed when field is date or datetime."
-                    )
-
-        if len(v) not in [1, 2]:
-            raise Exception("value should be 1 or 2.")
-        elif len(v) == 2 and type(v[0]) != type(v[1]):
-            raise Exception("value type should be same.")
-
-        operator = data.get("operator")
-        if operator in [
-            Operator.BETWEEN,
-            Operator.EQ_BETWEEN,
-            Operator.GTE_BETWEEN,
-            Operator.LTE_BETWEEN,
-        ]:
-            if type(v) != list:
-                raise Exception("Value should be a list if operator is between.")
-
-            bv = max(v)
-            sv = min(v)
-
-            if bv == sv:
-                raise Exception("Value in the list should include two different value.")
-
-        return data
-
-
-class ConditionGroup(BaseModel):
-    logic: list[Literal["AND", "OR"]]
-    conditions: list[Union[Condition, "ConditionGroup"]]
-
-    def to_sql(self):
-        sql = ""
-        cond_n = len(self.conditions)
-        log_n = len(self.logic)
-        if log_n != cond_n - 1:
-            raise Exception("the mount of condition should be one more than logic")
-
-        lc = 0
-        for i in range(0, cond_n):
-            if i + 1 == cond_n:
-                sql = sql + self.conditions[i].to_string()
-            else:
-                sql = sql + self.conditions[i].to_string() + " " + self.logic[i] + " "
-            lc += 1
-            if lc > log_n:
-                break
-        return sql
-
-
-class AggregatedPrefix(str, enum.Enum):
-    # count
-    COUNT = "count_"
-    # AVG
-    AVG = "avg_"
+    def to_symbol(self):
+        mapping = {
+            "eq": "==",
+            "gt": ">",
+            "lt": "<",
+            "gte": ">=",
+            "lte": "<=",
+        }
+        return mapping.get(self.value)
 
 
 # filter
@@ -614,7 +401,7 @@ class VenueConfig(BaseModel):
     oms_type: str
     account_type: str
     base_currency: str
-    starting_balances: int
+    starting_balances: float
     # fill model
     prob_fill_on_limit: float
     prob_slippage: float
@@ -676,54 +463,88 @@ class DataConfig(BaseModel):
         return btdf
 
 
-_TYPE_REGISTRY: dict[str, type] = {
-    "float": float,
-    "int": int,
-    "str": str,
-    "bool": bool,
-    "datetime.date": datetime.date,
-}
+class EventType(str, enum.Enum):
+    # screening dataframe and marking the symbol
+    SCREENING = "screening"
+    # ranking according to the given condition to support the decision.
+    RANKING = "ranking"
+    # building a watch list
+    SELECT_WATCH_LIST = "selecting_watch_list"
+    # selecting the candidates which entry signal pass the threshold
+    SELECT_CANDIDATE = "selecting_candidate"
+    #
+    PRE_ORDER_VALIDATION = "pre_order_check_validation"
+    #
+    PLACING_ORDER = "placing_order"
+    #
+    FILLED_ORDER = "filled_order"
+    #
+    PARTIALLY_FILLED_ORDER = "partially_filled_order"
+    #
+    MODIFIED_ORDER = "modified_order"
+    #
+    CANCELED_ORDER = "canceled_order"
+    #
+    REJECTED_ORDER = "rejected_order"
+    #
+    MONITORING_POSITION = "monitoring_position"
+    #
+    TRIGGERED_EXIT_SIGNAL = "triggered_exit_signal"
+    #
+    ADJUSTED_POSITION = "adjusted_position"
+    #
+    CLOSED_POSITION = "closed_position"
 
 
-@lru_cache(maxsize=None)
-def _build_data_model(
-    field_specs: tuple[tuple[str, str, float | None], ...],
-) -> type[BaseModel]:
-    fields = {
-        name: (_TYPE_REGISTRY[type_name], default)
-        for name, type_name, default in field_specs
-    }
-    return create_model(
-        "IndicatorData",
-        __config__=ConfigDict(validate_assignment=False),
-        **fields,
-    )
+class WatchListAction(str, enum.Enum):
+    ADD = "add"
+    SKIP = "skip"  # already included in the list, skipping the action
+    REMOVE = "remove"
 
 
-@dataclass(frozen=True)
-class IndicatorDataField:
-    name: str
-    default: float | None
-    field_type: str
-    operator: Operator | None = field(default=None)
-    threshold: float | None = field(default=None)
+class WatchListActionReason(str, enum.Enum):
+    EXISTED = "existed"
 
 
-@dataclass(frozen=True)
-class IndicatorMeta:
-    """
-    Meta data class share to Actor and Strategy
-    """
+class CandidateAction(str, enum.Enum):
+    ADD = "add"
+    SKIP = "skip"  # already included in the list, skipping the action
+    REMOVE = "remove"
 
-    name: str
-    bar_spec_requirements: list[str]
-    fields: list[IndicatorDataField]
-    # normally all indicator will be same.....
-    snapshot_time: datetime.time | None = field(default=None)
 
-    def __post_init__(self):
-        field_specs = tuple((f.name, f.field_type, f.default) for f in self.fields)
-        object.__setattr__(self, "data_model", _build_data_model(field_specs))
+class CandidateActionReason(str, enum.Enum):
+    EXISTED = "existed"
+    SIGNAL_INVALIDATED = "signal_invalidated"
+
+
+class EventPayloadField(str, enum.Enum):
+    FILE_PATH = "file_path"
+    SOURCE = "source"
+    CONDITION = "condition"
+    ACTION = "action"
+    INVOLVED = "involved"
+    METRICS = "metrics"
+    REASON = "reason"
+
+
+class Event(BaseModel):
+    event_type: EventType
+    created_at: datetime.datetime
+    payload: dict[EventPayloadField, str | int | float | dict | enum.Enum]
+
+    model_config = {"use_enum_values": True}
+
+    @field_serializer("payload")
+    def serialize_payload(self, payload, _info):
+        out = {}
+        for k, v in payload.items():
+            if isinstance(k, enum.Enum):
+                out[k.value] = v
+            elif isinstance(k, str):
+                out[k] = v
+            else:
+                out[str(k)] = v
+        return out
 
 
 @dataclass(frozen=True)
@@ -733,116 +554,23 @@ class CustomDataMeta:
 
 
 @dataclass(frozen=True)
-class FilterCondition:
-    gap: tuple[Operator, float] | None = None
-    prior_day_change: tuple[Operator, float] | None = None
-    intraday_absolute_change: tuple[Operator, float] | None = None
-    volatility: tuple[Operator, float] | None = None
-    trading_value: tuple[Operator, float] | None = None
-    amplitude: tuple[Operator, float] | None = None
-
-    def to_mask(self, df: pd.DataFrame):
-        mask = pd.Series(True, index=df.index)
-
-        for field_name, value in vars(self).items():
-            if value is None:
-                continue
-
-            operator, threshold = value
-
-            if operator == Operator.GT:
-                mask &= df[field_name] > threshold
-            elif operator == Operator.GTE:
-                mask &= df[field_name] >= threshold
-            elif operator == Operator.LT:
-                mask &= df[field_name] < threshold
-            elif operator == Operator.LTE:
-                mask &= df[field_name] <= threshold
-
-        return mask
-
-    def to_condition_dict(self):
-        cd = {
-            field_name: value
-            for field_name, value in vars(self).items()
-            if value is not None
-        }
-        return cd
-
-    def to_condition_json_string(self):
-        jd = {
-            field_name: value
-            for field_name, value in vars(self).items()
-            if value is not None
-        }
-        return json.dumps(jd)
-
-
-@dataclass(frozen=True)
-class FilterConfig:
-    filter_conditions: FilterCondition
-    filter_info_calc_pacing: int
-    filter_freeze_time: datetime.time
-    filter_result_dir: str
-
-
-@dataclass(frozen=True)
-class TradingCondition:
-    prior_bar_clv: tuple[Operator, float] | None = None
-    latest_close_minus_filter_high: tuple[Operator, float] | None = None
-
-    def to_mask(self, df: pd.DataFrame):
-        mask = pd.Series(True, index=df.index)
-
-        for field_name, value in vars(self).items():
-            if value is None:
-                continue
-
-            operator, threshold = value
-
-            if operator == Operator.GT:
-                mask &= df[field_name] > threshold
-            elif operator == Operator.GTE:
-                mask &= df[field_name] >= threshold
-            elif operator == Operator.LT:
-                mask &= df[field_name] < threshold
-            elif operator == Operator.LTE:
-                mask &= df[field_name] <= threshold
-
-        return mask
-
-    def to_condition_dict(self):
-        cd = {
-            field_name: value
-            for field_name, value in vars(self).items()
-            if value is not None
-        }
-        return cd
-
-    def to_condition_json_string(self):
-        jd = {
-            field_name: value
-            for field_name, value in vars(self).items()
-            if value is not None
-        }
-        return json.dumps(jd)
-
-
-@dataclass(frozen=True)
-class TradingConfig:
-    trading_conditions: TradingCondition
-    start_trading_time: datetime.time
-    trading_info_calc_pacing: int
-    max_open_order: int
-    max_value_per_order: float
-    daily_maximum_lost: float
-    trading_log_dir: str
-    signal_log_dir: str
-
-
-@dataclass(frozen=True)
 class AccountConfig:
     venue: Venue
+
+
+@dataclass(frozen=True)
+class TradingRule:
+    open_position_maximum: int
+    position_value_maximum: float
+    open_order_maximum: int
+    order_value_limit: float
+    forced_close_at: datetime.time
+
+
+@dataclass(frozen=True)
+class SessionConfig:
+    market_open_at: datetime.time
+    market_close_at: datetime.time
 
 
 if __name__ == "__main__":

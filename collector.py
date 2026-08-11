@@ -1,5 +1,3 @@
-import threading
-import asyncio
 import os
 import pandas as pd
 from ib_async import IB, util, BarDataList

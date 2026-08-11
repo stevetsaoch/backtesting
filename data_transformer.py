@@ -79,6 +79,8 @@ class DataTransformer:
         df = df.rename(columns=str.lower)
         df["timestamp"] = pd.to_datetime(df["timestamp"])
         df = df.sort_values("timestamp").drop_duplicates(subset=["timestamp"])
+        # 1 minute shift because the data from ib is bar start time
+        df["timestamp"] = df["timestamp"] + pd.Timedelta(minutes=1)
         df = df.set_index("timestamp")
         ym_list = df.index.strftime("%Y-%m").unique().tolist()
         data_sets = []
@@ -155,9 +157,9 @@ class DataTransformer:
                 catalog.write_data([eq])
                 data = self._read_raw_data(t.raw_data_path)
 
-                if self.bar_type.bar_unit == "minute":
+                if self.bar_type.external_bar_unit == "minute":
                     data_sets = self._split_data_by_month(data)
-                if self.bar_type.bar_unit == "day":
+                if self.bar_type.external_bar_unit == "day":
                     data_sets = self._normalize_timestamp(data)
 
                 for ds in data_sets:
@@ -167,13 +169,13 @@ class DataTransformer:
                         for col in tz_cols:
                             ds[col] = ds[col].dt.tz_localize(None)
 
-                    bar_type = BarType.from_str(self.bar_type.to_string())
+                    bar_type = BarType.from_str(self.bar_type.to_bar_type())
                     wrangler = BarDataWrangler(bar_type=bar_type, instrument=eq)
-                    if self.bar_type.bar_unit == "minute":
+                    if self.bar_type.external_bar_unit == "minute":
                         bars = wrangler.process(
-                            data=ds, ts_init_delta=60_000_000_000
+                            data=ds,
                         )  # hard code, move ts_event to close
-                    if self.bar_type.bar_unit == "day":
+                    if self.bar_type.external_bar_unit == "day":
                         ds.index = ds.index + pd.Timedelta(hours=16, minutes=1)
                         bars = wrangler.process(
                             data=ds,
@@ -191,7 +193,7 @@ class DataTransformer:
                             self._delete_exist_data(
                                 catalog=catalog,
                                 data_cls=Bar,
-                                identifier=self.bar_type.to_string(),
+                                identifier=self.bar_type.to_bar_type(),
                                 start=ds.index.min(),
                             )
 
@@ -206,7 +208,7 @@ class DataTransformer:
 if __name__ == "__main__":
     from config import PROJECT_CONFIG, NAUTILUS_CONFIG
     from util import find_files
-    from pathlib import Path
+    from pathlib import Path, PosixPath
 
     root = Path("/Volumes/backtesting_main/data/")
     folders = [p for p in root.iterdir() if p.is_dir()]
@@ -222,14 +224,14 @@ if __name__ == "__main__":
         el = []
         bt = NautilusBarType(
             instrument=NautilusInstrumentId(symbol=symbol, venue=venue),
-            bar_unit="minute",
-            bar_size=1,
+            external_bar_unit="minute",
+            external_bar_size=1,
             l1_type="trade",
             external=True,
         )
         files = find_files(
             str(fo),
-            pattern=r"^.*\|1 min\.parquet$",
+            pattern=r"^.*\|(?:23|25) D\|1 min\.parquet$",
         )
         for f in files:
             e = NautilusEquityTask(

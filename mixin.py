@@ -9,5 +9,5 @@ class DailyResetMixin:
         self._current_session_date: datetime.date | None = None
         self._reset_callbacks: list[Callable[[], None]] = []
 
-    def register_daily_reset(self, callback: Callable[[], None]) -> None:
+    def _register_daily_reset(self, callback: Callable[[], None]) -> None:
         self._reset_callbacks.append(callback)

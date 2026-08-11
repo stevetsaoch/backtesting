@@ -1,18 +1,36 @@
-import pandas as pd
-import numpy as np
+import copy
 import datetime
-from pydantic import BaseModel
+from abc import abstractmethod
+from graphlib import TopologicalSorter, CycleError
 from nautilus_trader.indicators.base import Indicator
 from nautilus_trader.model.data import BarType, Bar
-from nautilus_trader.model.enums import BarAggregation
 from nautilus_trader.core.datetime import unix_nanos_to_dt
+from indicator.field import IndicatorDataFieldConfig, FieldUpdate, FIELD_REGISTRY
+
+
+def build_fields(configs: list[IndicatorDataFieldConfig]) -> dict[str, FieldUpdate]:
+    config_by_name = {cfg.name: cfg for cfg in configs}
+    graph = {cfg.name: set(cfg.depends_on) for cfg in configs}
+    try:
+        ts = TopologicalSorter(graph)
+        sorted_names = list(ts.static_order())
+    except CycleError as e:
+        raise ValueError(f"Field depends on other fields: {e}") from e
+
+    fields: dict[str, FieldUpdate] = {}
+    for name in sorted_names:
+        cfg = config_by_name[name]
+        cls = FIELD_REGISTRY[cfg.name]
+        dep_fields = {dep_name: fields[dep_name] for dep_name in cfg.depends_on}
+        fields[name] = cls(**dep_fields)
+    return fields
 
 
 class BaseIndicator(Indicator):
     def __init__(
         self,
         bar_types: list[BarType],
-        data_model: BaseModel,
+        field_configs: list[IndicatorDataFieldConfig],
         snapshot_time: datetime.time | None = None,
     ):
         super().__init__(
@@ -23,97 +41,54 @@ class BaseIndicator(Indicator):
                 snapshot_time.isoformat() if snapshot_time is not None else None,
             ]
         )
-        self.default_data = data_model()
         self.snapshot_time = snapshot_time
+        self.fields = build_fields(configs=field_configs)
+
+    @abstractmethod
+    def get(self, snapshot: bool) -> dict: ...
 
 
-class IntradayIndicator(BaseIndicator):
+class IntradayShortPeriodIndicator(BaseIndicator):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.snapshot_data: BaseModel | None = None
-        self.latest_data = self.default_data.copy(deep=True)
+        self.default_data = {n: f.value for n, f in self.fields.items()}
+        self.snapshot_data = self.default_data
+        self.latest_data = self.default_data
 
     def handle_bar(self, bar: Bar):
-        if bar.bar_type.spec.aggregation == BarAggregation.DAY:
-            return
-        if (
-            bar.bar_type.spec.aggregation == BarAggregation.MINUTE
-            and bar.bar_type.spec.step == 1
-        ):
-            self._update_date_and_open(bar)
-            self._update_current_high_and_low(bar)
-            self._update_trading_value(bar)
-            self._update_snapshot(bar)
-            self._update_amplitude()
+        for field in self.fields.values():
+            field.update(bar)
+        self._update_latest_date()
+        self._update_snapshot(bar)
 
-    def get(self, snapshot: bool = False) -> None | BaseModel:
-        if not snapshot:
-            return self.latest_data.copy(deep=True)
-        elif snapshot and self.snapshot_data is not None:
-            return self.snapshot_data.copy(deep=True)
+    def get(self, snapshot: bool = False) -> dict:
+        if snapshot:
+            return self.snapshot_data
         else:
-            return None
+            return self.latest_data
+
+    def _update_latest_date(self):
+        data = {}
+        for n, f in self.fields.items():
+            data[n] = f.value
+        self.latest_data = {n: f.value for n, f in self.fields.items()}
 
     def _update_snapshot(self, bar):
-        bar_time = unix_nanos_to_dt(bar.ts_init).time()
+        bar_time = unix_nanos_to_dt(bar.ts_event).time()
         if bar_time == self.snapshot_time:
-            self.snapshot_data = self.latest_data.copy(deep=True)
-
-    def _update_current_high_and_low(self, bar):
-        bar_high = bar.high.as_double()
-        bar_low = bar.low.as_double()
-        if self.latest_data.current_high is None:
-            self.latest_data.current_high = bar_high
-        elif bar_high > self.latest_data.current_high:
-            self.latest_data.current_high = bar_high
-
-        if self.latest_data.current_low is None:
-            self.latest_data.current_low = bar_low
-        elif bar_low < self.latest_data.current_low:
-            self.latest_data.current_low = bar_low
-
-    def _update_amplitude(self):
-        if (
-            self.latest_data.current_high is None
-            or self.latest_data.current_low is None
-        ):
-            return
-        self.latest_data.amplitude = (
-            self.latest_data.current_high - self.latest_data.current_low
-        )
-
-    def _update_trading_value(self, bar):
-        price = (
-            bar.high.as_double()
-            + bar.low.as_double()
-            + bar.open.as_double()
-            + bar.close.as_double()
-        ) / 4
-
-        if self.latest_data.trading_value is None:
-            self.latest_data.trading_value = price * bar.volume.as_double()
-        else:
-            self.latest_data.trading_value += price * bar.volume.as_double()
-
-    def _update_date_and_open(self, bar):
-        bar_date = unix_nanos_to_dt(bar.ts_init).date()
-        if self.latest_data.current_date == bar_date:
-            return
-        if (
-            self.latest_data.current_date is None
-            or self.latest_data.current_date != bar_date
-        ):
-            self.latest_data.current_date = bar_date
-            self.latest_data.open = bar.open.as_double()
-            return
+            self.snapshot_data = copy.deepcopy(self.latest_data)
 
     def _reset(self):
-        self.latest_data = self.default_data.copy(deep=True)
-        self.snapshot_data = self.default_data.copy(deep=True)
+        for field in self.fields.values():
+            field.reset()
+        self.snapshot_data = self.default_data
+        self.latest_data = self.default_data
 
 
 class IndicatorHub:
-    indicators = {"intraday": IntradayIndicator}
+    indicators = {
+        "intraday_short_period": IntradayShortPeriodIndicator,
+    }
 
     @classmethod
     def get(cls, indicator_name: str):
