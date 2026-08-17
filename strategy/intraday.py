@@ -17,7 +17,7 @@ from nautilus_trader.model.orders import Order
 from mixin import DailyResetMixin
 from indicator.field import IndicatorMeta
 from message import IntradayDataFrameRequest, IntradayDataFrameResponse
-from strategy.signal import Signal, ORBEntrySignal
+from strategy.signal import SignalMeta, SIGNAL_REGISTRY
 from schemas import (
     TradingRule,
     SessionConfig,
@@ -49,6 +49,7 @@ class ConsolidationAndBreakoutConfig(StrategyConfig, frozen=True):
     venue_currency_pair: dict
     msg_enpoint: str
     msg_outbound_endpoint: str
+    signal_meta_set: list[SignalMeta]
 
 
 class ConsolidationAndBreakout(Strategy, DailyResetMixin):
@@ -226,6 +227,21 @@ class ConsolidationAndBreakout(Strategy, DailyResetMixin):
             },
         )
 
+    def _build_signal(self, instrument_id: str):
+        sl = []
+        for signal_config in self.config.signal_meta_set:
+            s = SIGNAL_REGISTRY.get(signal_config.name)
+            sl.append(
+                s(
+                    name=signal_config.name,
+                    instrument_id=instrument_id,
+                    factor_configs=signal_config.factor_configs,
+                    callback_provider=self,
+                )
+            )
+
+        return sl
+
     def _build_watch_list(self, event):
         self._screening()  # may have better place to run this method
         mask = self.snapshot_data.eval(self.screening_query)
@@ -238,11 +254,7 @@ class ConsolidationAndBreakout(Strategy, DailyResetMixin):
                 .to_dict()
             )
             if k not in self.watch_list.keys():
-                self.watch_list[k] = ORBEntrySignal(
-                    instrument_id=k,
-                    reference=self.snapshot_data,
-                    depend_on=["intraday_high"],
-                )
+                self.watch_list[k] = self._build_signal(k)
 
                 self._create_and_append_event(
                     event_type=EventType.SELECT_WATCH_LIST,
@@ -268,14 +280,23 @@ class ConsolidationAndBreakout(Strategy, DailyResetMixin):
     def _selectt_candidate(self, bar):
         instrument_id_string = str(bar.bar_type.instrument_id)
         for k, v in self.watch_list.items():
+            # v is a list of Signal
             if instrument_id_string != k:
                 continue
 
-            metrics = v.update(bar)
+            metrics = {}
+            for s in v:
+                s.update(bar)
+                metrics[s.name] = {}
+                sm = {}
+                for f in s.factors:
+                    sm[f.name] = f.metric
+                metrics[s.name] = metrics[s.name] | sm
+            signal = all([s.signal for s in v])
             if instrument_id_string in self.candidate:
-                if v.signal:
+                if signal:
                     continue
-                elif not v.signal:
+                elif not signal:
                     self.candidate.remove(k)
                     self._create_and_append_event(
                         event_type=EventType.SELECT_CANDIDATE,
@@ -288,7 +309,7 @@ class ConsolidationAndBreakout(Strategy, DailyResetMixin):
                     )
 
             elif not instrument_id_string in self.candidate:
-                if v.signal:
+                if signal:
                     self.candidate.add(k)
                     self._create_and_append_event(
                         event_type=EventType.SELECT_CANDIDATE,
@@ -298,7 +319,7 @@ class ConsolidationAndBreakout(Strategy, DailyResetMixin):
                             EventPayloadField.METRICS: metrics,
                         },
                     )
-                elif not v.signal:
+                elif not signal:
                     self._create_and_append_event(
                         event_type=EventType.SELECT_CANDIDATE,
                         payload={
@@ -370,6 +391,13 @@ class ConsolidationAndBreakout(Strategy, DailyResetMixin):
             self.close_position(position)
             # put the record some where
 
+    # callbacks
+    def get_snapshot_intraday_high(self, instrument_id: str):
+        v = self.snapshot_data.loc[
+            self.snapshot_data["instrument_id"] == instrument_id, "intraday_high"
+        ].item()
+        return v
+
     # event log
     def _create_and_append_event(
         self, event_type: EventType, payload: dict = defaultdict()
@@ -379,7 +407,6 @@ class ConsolidationAndBreakout(Strategy, DailyResetMixin):
             created_at=self.clock.utc_now(),
             payload=payload,
         )
-        print(event)
         print(event.model_dump_json())
         self.events.append(event)
 

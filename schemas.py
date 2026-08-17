@@ -1,5 +1,6 @@
 import enum
 import datetime
+import operator
 import zoneinfo
 import pandas as pd
 from dataclasses import dataclass
@@ -226,6 +227,15 @@ class Operator(str, enum.Enum):
             "lt": "<",
             "gte": ">=",
             "lte": "<=",
+        }
+        return mapping.get(self.value)
+
+    def to_operator(self):
+        mapping = {
+            "gt": operator.gt,
+            "gte": operator.ge,
+            "lt": operator.lt,
+            "lte": operator.le,
         }
         return mapping.get(self.value)
 

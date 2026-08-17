@@ -76,7 +76,7 @@ class ConsolidationAndBreakoutIndicatorManageActor(Actor, DailyResetMixin):
         for indm in self.config.indicator_meta_set:
             if indm is None:
                 continue
-            indi = IndicatorHub.get(indm.name)
+            indi = IndicatorHub.get(indm.indicator_name)
             if indi is None:
                 raise Exception("Not valid indicator")
 
@@ -123,7 +123,6 @@ class ConsolidationAndBreakoutIndicatorManageActor(Actor, DailyResetMixin):
 
                 fields[cfg.name] = pd.Series(dtype=dtype)
 
-        # hard coded
         return pd.DataFrame(fields)
 
     def _build_dataframe(self, snapshot: bool = False):

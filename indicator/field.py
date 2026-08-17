@@ -35,6 +35,7 @@ class IndicatorMeta:
     """
 
     name: str
+    indicator_name: str
     bar_spec_requirements: list[str]
     field_configs: list[IndicatorDataFieldConfig]
     # normally all indicator will be same.....
@@ -142,7 +143,7 @@ class IntradayLowUpdatedAtField(FieldUpdate):
     def update(self, bar: Bar) -> datetime.time:
         current = self._intraday_low.value
         if current != self._last_value:
-            self._value = unix_nanos_to_dt(bar.ts_event).time()
+            self._value = unix_nanos_to_dt(bar.ts_init).time()
             self._last_value = current
         return self._value
 

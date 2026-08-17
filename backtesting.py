@@ -20,6 +20,8 @@ from schemas import (
     SessionConfig,
 )
 from indicator.field import IndicatorDataFieldConfig, IndicatorMeta
+from strategy.factor import FactorConfig
+from strategy.signal import SignalMeta
 from config import NAUTILUS_CONFIG, VENUE_CONFIG
 
 # global variables
@@ -149,7 +151,8 @@ intraday_amplitude = IndicatorDataFieldConfig(
     ),
 )
 intraday_1_min = IndicatorMeta(
-    name="intraday_short_period",
+    name="intraday_1_min",
+    indicator_name="intraday_short_period",
     bar_spec_requirements=[f"1-{BarAggregation.MINUTE}"],
     field_configs=[
         intraday_open,
@@ -162,7 +165,24 @@ intraday_1_min = IndicatorMeta(
     ],
 )
 
-
+# signal
+clv_factor = FactorConfig(
+    name="clv",
+    operator=Operator.GTE,
+    threshold=0.7,
+    ascending=True,
+    provider="factor_provider",
+)
+two_bar_higher_close = FactorConfig(
+    name="two_bar_higher_close",
+    operator=Operator.GTE,
+    threshold=0.0,
+    ascending=True,
+    provider="factor_provider",
+)
+orb_entry_signal = SignalMeta(
+    name="orb_entry_signal", factor_configs=[clv_factor, two_bar_higher_close]
+)
 # other
 consolidation_end: datetime.time = datetime.time(10, 30, 0)
 trading_rule: TradingRule = TradingRule(
@@ -202,6 +222,7 @@ s = ImportableStrategyConfig(
         "consolidation_end": consolidation_end,
         "session_config": session_config,
         "trading_rule": trading_rule,
+        "signal_meta_set": [orb_entry_signal],
         # hard code
         "venue_currency_pair": {"SIM": "USD"},
         "msg_enpoint": "consolidation.strategy",
