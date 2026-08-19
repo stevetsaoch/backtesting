@@ -16,10 +16,18 @@ from schemas import (
     DataConfig,
     NautilusBarType,
     NautilusInstrumentId,
-    TradingRule,
     SessionConfig,
+    TieBreakingMethod,
+    AggregationMethod,
+    PercentileRankingConfig,
+    ZScoreRankingConfig,
+    RankingConfigs,
+    OrderRules,
+    PositionRules,
+    RiskRules,
 )
-from indicator.field import IndicatorDataFieldConfig, IndicatorMeta
+from indicator.field import IndicatorFieldConfig
+from indicator.indicator import IndicatorMeta
 from strategy.factor import FactorConfig
 from strategy.signal import SignalMeta
 from config import NAUTILUS_CONFIG, VENUE_CONFIG
@@ -44,7 +52,7 @@ r = duckdb.sql(
 ).df()
 
 symbols = r["symbol"].to_list()
-symbols = symbols[0:2]
+symbols = symbols[0:4]
 # IIS/OS window
 engine_start_time = datetime.datetime(2019, 12, 1, 0, 0, 0)
 warmup_data_start_time = engine_start_time + datetime.timedelta(days=-5)
@@ -107,40 +115,47 @@ for s in symbols:
     dcfs.append(dcf_m)
     dcfs.append(dcf_d)
 
-intraday_open = IndicatorDataFieldConfig(
+intraday_open = IndicatorFieldConfig(
     name="intraday_open",
+    field_name="intraday_open",
     field_type="float",
     depends_on=(),
 )
-intraday_high = IndicatorDataFieldConfig(
+intraday_high = IndicatorFieldConfig(
     name="intraday_high",
+    field_name="intraday_high",
     field_type="float",
     depends_on=(),
 )
-intraday_low = IndicatorDataFieldConfig(
+intraday_low = IndicatorFieldConfig(
     name="intraday_low",
+    field_name="intraday_low",
     field_type="float",
     depends_on=(),
 )
-intraday_trading_value = IndicatorDataFieldConfig(
+intraday_trading_value = IndicatorFieldConfig(
     name="intraday_trading_value",
+    field_name="intraday_trading_value",
     field_type="float",
     operator=Operator.GTE,
     threshold=10_000.0,
     depends_on=(),
 )
-intraday_high_updated_at = IndicatorDataFieldConfig(
+intraday_high_updated_at = IndicatorFieldConfig(
     name="intraday_high_updated_at",
+    field_name="intraday_high_updated_at",
     field_type="datetime.time",
     depends_on=("intraday_high",),
 )
-intraday_low_updated_at = IndicatorDataFieldConfig(
+intraday_low_updated_at = IndicatorFieldConfig(
     name="intraday_low_updated_at",
+    field_name="intraday_low_updated_at",
     field_type="datetime.time",
     depends_on=("intraday_low",),
 )
-intraday_amplitude = IndicatorDataFieldConfig(
+intraday_amplitude = IndicatorFieldConfig(
     name="intraday_amplitude",
+    field_name="intraday_amplitude",
     field_type="float",
     operator=Operator.LTE,
     threshold=10.0,
@@ -149,6 +164,15 @@ intraday_amplitude = IndicatorDataFieldConfig(
         "intraday_low",
         "intraday_open",
     ),
+)
+intraday_atr = IndicatorFieldConfig(
+    name="intraday_atr",
+    field_name="intraday_atr",
+    field_type="float",
+    operator=Operator.LTE,
+    threshold=10.0,
+    depends_on=(),
+    params={"bar_buffer_size": 14},
 )
 intraday_1_min = IndicatorMeta(
     name="intraday_1_min",
@@ -162,6 +186,7 @@ intraday_1_min = IndicatorMeta(
         intraday_trading_value,
         intraday_low_updated_at,
         intraday_high_updated_at,
+        intraday_atr,
     ],
 )
 
@@ -172,34 +197,80 @@ clv_factor = FactorConfig(
     threshold=0.7,
     ascending=True,
     provider="factor_provider",
+    bar_buffer_size=2,
+    ranking_config=RankingConfigs(
+        percentile=PercentileRankingConfig(
+            tie_breaking_method=TieBreakingMethod.MINIMUM, ascending=True
+        ),
+        zscore=ZScoreRankingConfig(ascending=True),
+    ),
 )
 two_bar_higher_close = FactorConfig(
     name="two_bar_higher_close",
-    operator=Operator.GTE,
+    operator=Operator.GT,
     threshold=0.0,
-    ascending=True,
+    ascending=False,
+    bar_buffer_size=2,
     provider="factor_provider",
+    ranking_config=RankingConfigs(
+        percentile=PercentileRankingConfig(
+            tie_breaking_method=TieBreakingMethod.MINIMUM, ascending=True
+        ),
+        zscore=ZScoreRankingConfig(ascending=True),
+    ),
 )
+
 orb_entry_signal = SignalMeta(
-    name="orb_entry_signal", factor_configs=[clv_factor, two_bar_higher_close]
+    name="orb_entry_signal",
+    factor_configs=[clv_factor, two_bar_higher_close],
+    internal_aggregation_method=AggregationMethod.MINIMUM,
 )
 # other
 consolidation_end: datetime.time = datetime.time(10, 30, 0)
-trading_rule: TradingRule = TradingRule(
-    open_position_maximum=2,
-    position_value_maximum=venue.starting_balances * 0.8,
-    open_order_maximum=2,
-    order_value_limit=800.0,
-    forced_close_at=datetime.time(15, 30, 0, 0),
+# trading rule
+balance = VENUE_CONFIG.starting_balances
+position_value_ratio = 0.8
+position_value_maximum = balance * position_value_ratio
+position_maximum = 2.0
+order_maximum = 2.0
+order_value_maximum = position_value_maximum / order_maximum
+risk_ratio = 0.02
+maximum_lose_per_day = balance * risk_ratio
+forced_close_at = datetime.time(15, 30, 0, 0)
+trading_bar_type = f"1-MINUTE-LAST"
+stop_price_buffer = 0.02
+risk_ratio = 0.02
+# rules
+order_rule: OrderRules = OrderRules(
+    trading_bar_type=trading_bar_type,
+    order_maximum=order_maximum,
+    order_value_maximum=order_value_maximum,
 )
+position_rule: PositionRules = PositionRules(
+    position_value_ratio=position_value_ratio,
+    position_value_maximum=position_value_maximum,
+    position_maximum=position_maximum,
+    forced_close_at=forced_close_at,
+)
+risk_rule: RiskRules = RiskRules(
+    balance=balance,
+    stop_price_buffer=stop_price_buffer,
+    maximum_lose_per_day=maximum_lose_per_day,
+    risk_ratio=risk_ratio,
+)
+# session
 session_config = SessionConfig(
-    market_open_at=datetime.time(9, 30, 0), market_close_at=datetime.time(16, 0, 0)
+    market_open_at=datetime.time(9, 30, 0), market_close_at=datetime.time(16, 1, 0)
 )
-
+name = "test_backtesting"
+signal_aggregation_method = AggregationMethod.MINIMUM
+order_config_factory = "orb_long_bracket_order_config_factory"
+order_type = "bracket"
 a = ImportableActorConfig(
     actor_path="actor.intraday:ConsolidationAndBreakoutIndicatorManageActor",
     config_path="actor.intraday:ConsolidationAndBreakoutIndicatorManageActorConfig",
     config={
+        "name": name,
         "warmup_data_start_datetime": warmup_data_start_time,
         "data_start_datetime": engine_start_time,
         "bar_types": bar_types,
@@ -215,14 +286,20 @@ s = ImportableStrategyConfig(
     strategy_path="strategy.intraday:ConsolidationAndBreakout",
     config_path="strategy.intraday:ConsolidationAndBreakoutConfig",
     config={
+        "name": name,
         "warmup_data_start_datetime": warmup_data_start_time,
         "data_start_datetime": engine_start_time,
         "bar_types": bar_types,
         "indicator_meta_set": [intraday_1_min],
         "consolidation_end": consolidation_end,
         "session_config": session_config,
-        "trading_rule": trading_rule,
+        "order_rule": order_rule,
+        "position_rule": position_rule,
+        "risk_rule": risk_rule,
+        "order_config_factory": order_config_factory,
+        "order_type": "bracket",
         "signal_meta_set": [orb_entry_signal],
+        "signal_aggregation_method": signal_aggregation_method,
         # hard code
         "venue_currency_pair": {"SIM": "USD"},
         "msg_enpoint": "consolidation.strategy",
@@ -233,6 +310,7 @@ s = ImportableStrategyConfig(
 
 btrc = BacktestRunConfig(
     engine=BacktestEngineConfig(
+        trader_id="test-trader",  # hard code
         actors=[a],
         strategies=[s],
         logging=LoggingConfig(log_level="INFO"),

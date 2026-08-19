@@ -1,12 +1,14 @@
-import operator
 from collections import deque
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
 from nautilus_trader.model import Bar
 
-from schemas import Operator
-from strategy.provider_protocols import FactorProvider
+from protocols.provider import ActorInfoProvider
+from schemas import (
+    Operator,
+    RankingConfigs,
+)
 
 
 @dataclass(frozen=True)
@@ -17,6 +19,8 @@ class FactorConfig:
     # for ranking,
     ascending: bool
     provider: str
+    ranking_config: RankingConfigs
+    bar_buffer_size: int
 
 
 class Factor(ABC):
@@ -26,13 +30,15 @@ class Factor(ABC):
         instrument_id: str,
         operator: Operator,
         threshold: float,
-        callback_provider: FactorProvider | None = None,
+        bar_buffer_size: int,
+        provider: ActorInfoProvider | None = None,
     ):
         self.name = name
         self.instrument_id = instrument_id
-        self.callback_provider = callback_provider
+        self.provider = provider
         self.operator = operator
         self.threshold = threshold
+        self.bar_buffer_size = bar_buffer_size
 
     @abstractmethod
     def update(self, *args, **kwargs): ...
@@ -43,7 +49,7 @@ class Factor(ABC):
 
     @property
     @abstractmethod
-    def metric(self) -> float | int: ...
+    def value(self) -> float | int: ...
 
 
 class CLVFactor(Factor):
@@ -51,19 +57,21 @@ class CLVFactor(Factor):
         super().__init__(*args, **kwargs)
         self.clv = 0.0
         self.stage = 0
-        self.bars = deque(maxlen=2)
+        self.bars = deque(maxlen=self.bar_buffer_size)
 
     @property
     def signal(self):
         exceed: bool = False
-        if self.stage == 0:
+        if len(self.bars) < self.bar_buffer_size:
             pass
-        if self.stage == 1:
+        elif self.stage == 0:
+            pass
+        elif self.stage == 1:
             exceed = True
         return exceed
 
     @property
-    def metric(self):
+    def value(self):
         return self.clv
 
     def update(self, bar: Bar):
@@ -89,27 +97,28 @@ class TwoBarHigherCloseFactor(Factor):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.stage = 0
-        self.bars = deque(maxlen=2)
+        self.bars = deque(maxlen=self.bar_buffer_size)
         self.spread = float("-inf")
 
     @property
     def signal(self):
-        trade: bool = False
+        exceed: bool = False
+        if len(self.bars) < self.bar_buffer_size:
+            pass
         if self.stage == 0:
             pass
         if self.stage == 1:
-            trade = True
-        return trade
+            exceed = True
+        return exceed
 
     @property
-    def metric(self):
+    def value(self):
         return self.spread
 
     def update(self, bar: Bar):
         self.bars.append(bar)
         if len(self.bars) == 2:
             v = self.bars[1].close.as_double() - self.bars[0].close.as_double()
-            self.callback_provider.get_snapshot_intraday_high(self.instrument_id)
             self.spread = v
 
             if self.operator.to_operator()(v, self.threshold):

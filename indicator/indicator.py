@@ -1,14 +1,36 @@
 import copy
 import datetime
 from abc import abstractmethod
+from dataclasses import dataclass, field
 from graphlib import TopologicalSorter, CycleError
 from nautilus_trader.indicators.base import Indicator
 from nautilus_trader.model.data import BarType, Bar
 from nautilus_trader.core.datetime import unix_nanos_to_dt
-from indicator.field import IndicatorDataFieldConfig, FieldUpdate, FIELD_REGISTRY
+from indicator.field import IndicatorFieldConfig, IndicatorField, FIELD_REGISTRY
 
 
-def build_fields(configs: list[IndicatorDataFieldConfig]) -> dict[str, FieldUpdate]:
+@dataclass(frozen=True)
+class NativeIndicatorMeta:
+    indicator_name: str
+    bar_spec_requirements: list[str]
+    snapshot_time: datetime.time | None = field(default=None)
+
+
+@dataclass(frozen=True)
+class IndicatorMeta:
+    """
+    Meta data class share to Actor and Strategy to build and register indicator
+    """
+
+    name: str
+    indicator_name: str
+    bar_spec_requirements: list[str]
+    field_configs: list[IndicatorFieldConfig]
+    # normally all indicator will be same.....
+    snapshot_time: datetime.time | None = field(default=None)
+
+
+def build_fields(configs: list[IndicatorFieldConfig]) -> dict[str, IndicatorField]:
     config_by_name = {cfg.name: cfg for cfg in configs}
     graph = {cfg.name: set(cfg.depends_on) for cfg in configs}
     try:
@@ -17,12 +39,13 @@ def build_fields(configs: list[IndicatorDataFieldConfig]) -> dict[str, FieldUpda
     except CycleError as e:
         raise ValueError(f"Field depends on other fields: {e}") from e
 
-    fields: dict[str, FieldUpdate] = {}
+    fields: dict[str, IndicatorField] = {}
     for name in sorted_names:
         cfg = config_by_name[name]
-        cls = FIELD_REGISTRY[cfg.name]
+        cls = FIELD_REGISTRY[cfg.field_name]
         dep_fields = {dep_name: fields[dep_name] for dep_name in cfg.depends_on}
-        fields[name] = cls(**dep_fields)
+        params = cfg.params if cfg.params else {}
+        fields[name] = cls(**dep_fields, **params)
     return fields
 
 
@@ -30,7 +53,7 @@ class BaseIndicator(Indicator):
     def __init__(
         self,
         bar_types: list[BarType],
-        field_configs: list[IndicatorDataFieldConfig],
+        field_configs: list[IndicatorFieldConfig],
         snapshot_time: datetime.time | None = None,
     ):
         super().__init__(
@@ -54,6 +77,7 @@ class IntradayShortPeriodIndicator(BaseIndicator):
         self.default_data = {n: f.value for n, f in self.fields.items()}
         self.snapshot_data = self.default_data
         self.latest_data = self.default_data
+        self.is_snapshot = False
 
     def handle_bar(self, bar: Bar):
         for field in self.fields.values():
@@ -75,21 +99,18 @@ class IntradayShortPeriodIndicator(BaseIndicator):
 
     def _update_snapshot(self, bar):
         bar_time = unix_nanos_to_dt(bar.ts_event).time()
-        if bar_time == self.snapshot_time:
+        if bar_time >= self.snapshot_time and self.is_snapshot == False:
             self.snapshot_data = copy.deepcopy(self.latest_data)
+            self.is_snapshot = True
 
     def _reset(self):
         for field in self.fields.values():
             field.reset()
         self.snapshot_data = self.default_data
         self.latest_data = self.default_data
+        self.is_snapshot = False
 
 
-class IndicatorHub:
-    indicators = {
-        "intraday_short_period": IntradayShortPeriodIndicator,
-    }
-
-    @classmethod
-    def get(cls, indicator_name: str):
-        return cls.indicators.get(indicator_name, None)
+INDICATOR_REGISTRY = {
+    "intraday_short_period": IntradayShortPeriodIndicator,
+}

@@ -3,7 +3,7 @@ import datetime
 import operator
 import zoneinfo
 import pandas as pd
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
 from typing import Literal, ClassVar, Any, Union
 from pydantic import BaseModel, ConfigDict, model_validator, field_serializer
 from ib_async import Contract, Stock
@@ -342,6 +342,7 @@ class SymbolInfo(BaseModel):
 
 class NautilusConfig(BaseModel):
     catalog_path: str
+    record_path: str
 
 
 class NautilusEquityTask(BaseModel):
@@ -474,6 +475,8 @@ class DataConfig(BaseModel):
 
 
 class EventType(str, enum.Enum):
+    #
+    WARM_UP = "warm_up"
     # screening dataframe and marking the symbol
     SCREENING = "screening"
     # ranking according to the given condition to support the decision.
@@ -482,8 +485,12 @@ class EventType(str, enum.Enum):
     SELECT_WATCH_LIST = "selecting_watch_list"
     # selecting the candidates which entry signal pass the threshold
     SELECT_CANDIDATE = "selecting_candidate"
+    # ranking candidate to find the candidate which has highest metric
+    RANKING_CANDIDATE = "ranking_candidate"
     #
-    PRE_ORDER_VALIDATION = "pre_order_check_validation"
+    MAKING_ORDER = "making_order"
+    #
+    PRE_ORDER_VALIDATION = "pre_order_validation"
     #
     PLACING_ORDER = "placing_order"
     #
@@ -531,10 +538,14 @@ class EventPayloadField(str, enum.Enum):
     FILE_PATH = "file_path"
     SOURCE = "source"
     CONDITION = "condition"
+    METHOD = "method"
     ACTION = "action"
     INVOLVED = "involved"
     METRICS = "metrics"
     REASON = "reason"
+    SNAPSHOT = "snapshot"
+    DESCRIPTION = "description"
+    CONFIG = "config"
 
 
 class Event(BaseModel):
@@ -557,6 +568,68 @@ class Event(BaseModel):
         return out
 
 
+# field can use as string to assign to variable
+class FieldNameMeta(type(BaseModel)):
+    def __getattr__(cls, item: str):
+        if item.startswith("__") and item.endswith("__"):
+            raise AttributeError(item)
+
+        for klass in cls.__mro__:
+            fields = klass.__dict__.get("__pydantic_fields__")
+            if fields and item in fields:
+                return item
+
+        raise AttributeError(f"{cls.__name__!r} has no attribute {item!r}")
+
+
+class CandidateFlat(BaseModel, metaclass=FieldNameMeta):
+    instrument_id: str
+    signal: str
+    factor: str
+    factor_value: float | int
+
+
+class TieBreakingMethod(str, enum.Enum):
+    MINIMUM = "min"
+    MAXIMUM = "max"
+    AVERAGE = "average"
+    FIRST = "first"
+    DENSE = "dense"
+
+
+class AggregationMethod(str, enum.Enum):
+    MINIMUM = "min"
+    MAXIMUM = "max"
+    AVGERAGE = "average"
+
+
+@dataclass(frozen=True)
+class PercentileRankingConfig:
+    tie_breaking_method: TieBreakingMethod
+    ascending: bool
+
+
+@dataclass(frozen=True)
+class ZScoreRankingConfig:
+    ascending: bool
+
+
+def enum_value_factory(items):
+    out = {}
+    for k, v in items:
+        out[k] = v.value if isinstance(v, enum.Enum) else v
+    return out
+
+
+@dataclass(frozen=True)
+class RankingConfigs:
+    percentile: PercentileRankingConfig
+    zscore: ZScoreRankingConfig
+
+    def to_dict(self):
+        return asdict(self, dict_factory=enum_value_factory)
+
+
 @dataclass(frozen=True)
 class CustomDataMeta:
     name: str
@@ -570,11 +643,66 @@ class AccountConfig:
 
 @dataclass(frozen=True)
 class TradingRule:
-    open_position_maximum: int
+    balance: float
+    position_value_ratio: float
     position_value_maximum: float
-    open_order_maximum: int
-    order_value_limit: float
+    position_maximum: float
+    order_maximum: float
+    order_value_maximum: float
+    maximum_lose_per_day: float
+    risk_ratio: float
+    stop_buffer: float
+    trading_bar_type: str
     forced_close_at: datetime.time
+
+
+@dataclass(frozen=True)
+class OrderRules:
+    trading_bar_type: str
+    order_maximum: float
+    order_value_maximum: float
+
+
+@dataclass(frozen=True)
+class PositionRules:
+    position_value_ratio: float
+    position_value_maximum: float
+    position_maximum: float
+    forced_close_at: datetime.time
+
+
+@dataclass(frozen=True)
+class RiskRules:
+    balance: float
+    risk_ratio: float
+    stop_price_buffer: float
+    maximum_lose_per_day: float
+
+
+class OrderRulesMutable(BaseModel):
+    trading_bar_type: str
+    order_maximum: float
+    order_value_maximum: float
+
+
+class PositionRulesMutable(BaseModel):
+    position_value_ratio: float
+    position_value_maximum: float
+    position_maximum: float
+    forced_close_at: datetime.time
+
+
+class RiskRulesMutable(BaseModel):
+    balance: float
+    risk_ratio: float
+    stop_price_buffer: float
+    maximum_lose_per_day: float
+
+
+class TradingRulesMutable(BaseModel):
+    order_rule: OrderRulesMutable
+    position_rule: PositionRulesMutable
+    risk_rule: RiskRulesMutable
 
 
 @dataclass(frozen=True)

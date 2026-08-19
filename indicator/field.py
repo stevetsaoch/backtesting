@@ -1,6 +1,7 @@
-from abc import abstractmethod
 import datetime
 from typing import Protocol
+from abc import abstractmethod
+from collections import defaultdict, deque
 from dataclasses import dataclass, field
 
 from nautilus_trader.model import Bar
@@ -20,30 +21,19 @@ TYPE_REGISTRY: dict[str, type] = {
 
 
 @dataclass(frozen=True)
-class IndicatorDataFieldConfig:
+class IndicatorFieldConfig:
     name: str
+    field_name: str
     field_type: str
     depends_on: tuple[str, ...]
+    params: dict | None = field(default=None)
     operator: Operator | None = field(default=None)
     threshold: float | None = field(default=None)
-
-
-@dataclass(frozen=True)
-class IndicatorMeta:
-    """
-    Meta data class share to Actor and Strategy to build and register indicator
-    """
-
-    name: str
-    indicator_name: str
-    bar_spec_requirements: list[str]
-    field_configs: list[IndicatorDataFieldConfig]
-    # normally all indicator will be same.....
-    snapshot_time: datetime.time | None = field(default=None)
+    bar_buffer_size: int | None = field(default=None)
 
 
 # fields
-class FieldUpdate(Protocol):
+class IndicatorField(Protocol):
     def update(
         self, bar: Bar
     ) -> float | datetime.time | datetime.date | datetime.datetime: ...
@@ -57,7 +47,7 @@ class FieldUpdate(Protocol):
     def reset(self) -> None: ...
 
 
-class IntradayOpenField(FieldUpdate):
+class IntradayOpenField(IndicatorField):
     def __init__(self):
         self._value_default = float("-inf")
         self._value = float("-inf")
@@ -77,7 +67,7 @@ class IntradayOpenField(FieldUpdate):
         self._value = self._value_default
 
 
-class IntradayHighField(FieldUpdate):
+class IntradayHighField(IndicatorField):
     def __init__(self):
         self._value_default = float("-inf")
         self._value = float("-inf")
@@ -94,7 +84,7 @@ class IntradayHighField(FieldUpdate):
         self._value = self._value_default
 
 
-class IntradayLowField(FieldUpdate):
+class IntradayLowField(IndicatorField):
     def __init__(self):
         self._value_default = float("inf")
         self._value = float("inf")
@@ -111,8 +101,8 @@ class IntradayLowField(FieldUpdate):
         self._value = self._value_default
 
 
-class IntradayHighUpdatedAtField(FieldUpdate):
-    def __init__(self, intraday_high: FieldUpdate):
+class IntradayHighUpdatedAtField(IndicatorField):
+    def __init__(self, intraday_high: IndicatorField):
         self._intraday_high = intraday_high
         self._last_value = None
         self._value_default = None
@@ -133,8 +123,8 @@ class IntradayHighUpdatedAtField(FieldUpdate):
         self._value = self._value_default
 
 
-class IntradayLowUpdatedAtField(FieldUpdate):
-    def __init__(self, intraday_low: FieldUpdate):
+class IntradayLowUpdatedAtField(IndicatorField):
+    def __init__(self, intraday_low: IndicatorField):
         self._intraday_low = intraday_low
         self._last_value = None
         self._value_default = None
@@ -155,7 +145,7 @@ class IntradayLowUpdatedAtField(FieldUpdate):
         self._value = self._value_default
 
 
-class IntradayTradingValueField(FieldUpdate):
+class IntradayTradingValueField(IndicatorField):
     def __init__(self):
         self._value_default = 0.0
         self._value = 0.0
@@ -178,12 +168,12 @@ class IntradayTradingValueField(FieldUpdate):
         self._value = self._value_default
 
 
-class IntradayAmplitudeField(FieldUpdate):
+class IntradayAmplitudeField(IndicatorField):
     def __init__(
         self,
-        intraday_high: FieldUpdate,
-        intraday_open: FieldUpdate,
-        intraday_low: FieldUpdate,
+        intraday_high: IndicatorField,
+        intraday_open: IndicatorField,
+        intraday_low: IndicatorField,
     ):
         self._high = intraday_high
         self._low = intraday_low
@@ -203,6 +193,45 @@ class IntradayAmplitudeField(FieldUpdate):
         self._value = self._value_default
 
 
+class IntradayATRField(IndicatorField):
+    def __init__(self, bar_buffer_size: int):
+        self._value_default = float("-inf")
+        self._value = float("-inf")
+        self.bar_buffer_size = bar_buffer_size
+        self.bars = deque(maxlen=self.bar_buffer_size)
+        self.atr_n = deque(maxlen=self.bar_buffer_size)
+
+    def update(self, bar: Bar) -> float:
+        self.bars.append(bar)
+        self._atr(bar)
+        if len(self.atr_n) < self.bar_buffer_size:
+            pass
+        elif self._value == self._value_default:
+            self._value = sum(self.atr_n) / len(self.atr_n)
+        else:
+            self._value = sum(self.atr_n) / len(self.atr_n)
+        return self._value
+
+    @property
+    def value(self) -> float:
+        return self._value
+
+    def reset(self):
+        self._value = self._value_default
+        self.bars = deque(maxlen=self.bar_buffer_size)
+        self.atr_n = deque(maxlen=self.bar_buffer_size)
+
+    def _atr(self, bar: Bar):
+        if len(self.bars) < 2:
+            return
+        tr = max(
+            self.bars[-1].high.as_double() - self.bars[-1].low.as_double(),
+            abs(self.bars[-1].high.as_double() - self.bars[-2].close.as_double()),
+            abs(self.bars[-1].low.as_double() - self.bars[-2].close.as_double()),
+        )
+        self.atr_n.append(tr)
+
+
 FIELD_REGISTRY: dict[str, type] = {
     "intraday_open": IntradayOpenField,
     "intraday_high": IntradayHighField,
@@ -211,6 +240,7 @@ FIELD_REGISTRY: dict[str, type] = {
     "intraday_low_updated_at": IntradayLowUpdatedAtField,
     "intraday_trading_value": IntradayTradingValueField,
     "intraday_amplitude": IntradayAmplitudeField,
+    "intraday_atr": IntradayATRField,
 }
 
 if __name__ == "__main__":

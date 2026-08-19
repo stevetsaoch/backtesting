@@ -1,23 +1,25 @@
+from typing import Any
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
 from nautilus_trader.model import Bar
 
-from strategy.provider_protocols import Provider
-from strategy.factor import FactorConfig, FACTOR_REGISTRY
-from schemas import Operator
+from protocols.provider import Provider
+from signal.factor import FactorConfig, FACTOR_REGISTRY
+from schemas import AggregationMethod
 
 
 @dataclass(frozen=True)
 class SignalMeta:
     name: str
     factor_configs: list[FactorConfig]
+    internal_aggregation_method: AggregationMethod
 
 
 def build_factor(
     instrument_id: str,
     factor_configs: list[FactorConfig],
-    callback_provider: Provider,
+    provider: Provider,
 ):
     factors = []
     for c in factor_configs:
@@ -25,9 +27,10 @@ def build_factor(
         f = fc(
             c.name,
             instrument_id=instrument_id,
-            callback_provider=callback_provider,
+            provider=provider,
             operator=c.operator,
             threshold=c.threshold,
+            bar_buffer_size=c.bar_buffer_size,
         )
         factors.append(f)
     return factors
@@ -39,7 +42,7 @@ class BaseSignal(ABC):
         name: str,
         instrument_id: str,
         factor_configs: list[FactorConfig],
-        callback_provider: Provider,
+        provider: Provider,
     ):
         self.name = name
         self.factor_configs = factor_configs
@@ -47,7 +50,7 @@ class BaseSignal(ABC):
         self.factors = build_factor(
             instrument_id=self.instrument_id,
             factor_configs=factor_configs,
-            callback_provider=callback_provider,
+            provider=provider,
         )
 
     @abstractmethod
@@ -56,6 +59,10 @@ class BaseSignal(ABC):
     @property
     @abstractmethod
     def signal(self) -> bool: ...
+
+    @property
+    @abstractmethod
+    def metric(self) -> dict[Any, Any]: ...
 
 
 class ORBEntrySignal(BaseSignal):
@@ -69,10 +76,17 @@ class ORBEntrySignal(BaseSignal):
     @property
     def signal(self):
         tradeable = True
-        for s in self.factors:
-            if not s.signal:
+        for f in self.factors:
+            if not f.signal:
                 return False
         return tradeable
+
+    @property
+    def metric(self):
+        metric = {}
+        for f in self.factors:
+            metric[f.name] = f.value
+        return metric
 
 
 SIGNAL_REGISTRY: dict[str, type] = {"orb_entry_signal": ORBEntrySignal}

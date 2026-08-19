@@ -10,13 +10,14 @@ from nautilus_trader.model.enums import BarAggregation
 from nautilus_trader.indicators.base import Indicator
 
 from mixin import DailyResetMixin
-from indicator.indicator import IndicatorHub
 from schemas import SessionConfig
-from indicator.field import IndicatorMeta, TYPE_REGISTRY
+from indicator.field import TYPE_REGISTRY
+from indicator.indicator import IndicatorMeta, INDICATOR_REGISTRY
 from message import IntradayDataFrameResponse, IntradayDataFrameRequest
 
 
 class ConsolidationAndBreakoutIndicatorManageActorConfig(ActorConfig, frozen=True):
+    name: str
     warmup_data_start_datetime: datetime.datetime
     data_start_datetime: datetime.datetime
     bar_types: dict[InstrumentId, list[BarType]]
@@ -41,7 +42,7 @@ class ConsolidationAndBreakoutIndicatorManageActor(Actor, DailyResetMixin):
     def on_start(self):
         self._init_daily_reset()
         self._register_daily_reset(self._on_daily_reset)
-        self._registry_indicator()
+        self._register_indicator()
         for bts in self.config.bar_types.values():
             for bt in bts:
                 self.subscribe_bars(bt)
@@ -71,12 +72,12 @@ class ConsolidationAndBreakoutIndicatorManageActor(Actor, DailyResetMixin):
         print(self.indicator_instrument_map)
         pass
 
-    def _registry_indicator(self):
+    def _register_indicator(self):
         # registry indicator
         for indm in self.config.indicator_meta_set:
             if indm is None:
                 continue
-            indi = IndicatorHub.get(indm.indicator_name)
+            indi = INDICATOR_REGISTRY.get(indm.indicator_name)
             if indi is None:
                 raise Exception("Not valid indicator")
 

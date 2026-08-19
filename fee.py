@@ -1,7 +1,6 @@
 from nautilus_trader.config import StrategyConfig
 from nautilus_trader.backtest.models import FeeModel
 from nautilus_trader.model.objects import Money
-from nautilus_trader.model.currencies import USD
 
 
 class IbkrTieredFeeConfig(StrategyConfig, frozen=True):
