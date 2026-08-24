@@ -6,14 +6,22 @@ from collections import defaultdict
 from dataclasses import asdict
 from functools import singledispatchmethod, lru_cache
 
-from nautilus_trader.core.datetime import unix_nanos_to_dt
 from nautilus_trader.config import StrategyConfig
+from nautilus_trader.core.datetime import unix_nanos_to_dt
 from nautilus_trader.trading.strategy import Strategy
 from nautilus_trader.model.events.position import PositionClosed
 from nautilus_trader.model import InstrumentId, BarType, Bar
+from nautilus_trader.model.enums import OrderType
 from nautilus_trader.model.instruments import Instrument
-from nautilus_trader.model.events import OrderInitialized
-from nautilus_trader.model.enums import PositionSide, OrderSide, OrderType, TimeInForce
+from nautilus_trader.model.events import (
+    OrderInitialized,
+    OrderSubmitted,
+    OrderAccepted,
+    OrderRejected,
+    OrderCanceled,
+    OrderExpired,
+    OrderFilled,
+)
 from nautilus_trader.model.orders import Order
 
 from config import NAUTILUS_CONFIG
@@ -21,12 +29,18 @@ from mixin import DailyResetMixin
 from message import IntradayDataFrameRequest, IntradayDataFrameResponse
 from indicator.indicator import IndicatorMeta
 from indicator.field import IndicatorFieldConfig
-from signal.signal import BaseSignal, SignalMeta, SIGNAL_REGISTRY
-from signal.ranking import PercentilRanking
-from order.order import ORDER_CONFIG_FACTOR_REGISTER
-from order.order_validator import OrderValidator
+from trading_signal.signal import BaseSignal, SignalMeta, SIGNAL_REGISTRY
+from trading_signal.ranking import PercentilRanking
+from order.order_validator import ORDER_VALIDATOR_REGISTRY
+from order.order import (
+    OrderTicket,
+    OrderTicketGroup,
+    OrderTicketBook,
+    OrderState,
+    OrderRole,
+    ORDER_COMPOSER_REGISTRY,
+)
 from schemas import (
-    SessionConfig,
     Operator,
     CandidateFlat,
     EventType,
@@ -36,14 +50,18 @@ from schemas import (
     WatchListActionReason,
     CandidateAction,
     CandidateActionReason,
+    PreOrderValidationAction,
+    PreOrderValidationReason,
     AggregationMethod,
     OrderRules,
+    SessionRule,
     PositionRules,
     RiskRules,
     TradingRulesMutable,
     OrderRulesMutable,
     PositionRulesMutable,
     RiskRulesMutable,
+    SessionRuleMutable,
 )
 
 
@@ -62,48 +80,62 @@ class ConsolidationAndBreakoutConfig(StrategyConfig, frozen=True):
     consolidation_end: (
         datetime.time
     )  # time point which decide when the consolidation period end
-    session_config: SessionConfig
     order_rule: OrderRules
     position_rule: PositionRules
     risk_rule: RiskRules
+    session_rule: SessionRule
     order_config_factory: str
     order_type: str
+    order_validator: str
+    order_composer: str
     venue_currency_pair: dict
     msg_enpoint: str
     msg_outbound_endpoint: str
 
 
 class ConsolidationAndBreakout(Strategy, DailyResetMixin):
+    COL_SCREENING_RESULT = "screening_result"
+    COL_INSTRUMENT_ID = "instrument_id"
+    COL_RANK_POSTFIX = "_rank"
+    COL_RANK_SUM = "rank_sum"
+
     def __init__(self, config: ConsolidationAndBreakoutConfig):
         super().__init__(config)
         self.instrument_bar_type_map: dict = defaultdict()
+        # session
         self._current_session_date: datetime.date | None = None
         self._current_session_time: datetime.time | None = None
-        self.candidate: set[str] = set()
-        self.watch_list: dict[str, list[BaseSignal]] = defaultdict()
-        self.screening_query = self._screening_query()
-        self.screening_columns = self._screening_columns()
-        self._latest_data = pd.DataFrame()
-        self.latest_data_updated_at: datetime.time | None = None
-        self.snapshot_data = pd.DataFrame()
-        self.events: list[Event] = []
-        self.event_dir = Path(f"{NAUTILUS_CONFIG.record_path}{self.config.name}/events")
-        self._intraday_realized_pnl: float = 0.0
-        self._ranking_metric = None
+        self._current_session_bars: list[Bar] = []
+        # indicator dataframe
+        self.__latest_data = pd.DataFrame()
+        self._latest_data_updated_at: datetime.time | None = None
+        self._snapshot_data = pd.DataFrame()
+        self._is_snapshot_data_screened: bool = False
+        # screening, ranking and candidate
+        self._watch_list: dict[str, list[BaseSignal]] = defaultdict()
+        self._is_watch_list_built: bool = False
+        self._candidate: set[str] = set()
+        self._candidate_ranking_metric = None
+        # event
+        self._events: list[Event] = []
+        self._event_dir = Path(
+            f"{NAUTILUS_CONFIG.record_path}{self.config.name}/events"
+        )
+        # trade
         self._trading_rule = TradingRulesMutable(
             order_rule=OrderRulesMutable(**asdict(self.config.order_rule)),
             position_rule=PositionRulesMutable(**asdict(self.config.position_rule)),
             risk_rule=RiskRulesMutable(**asdict(self.config.risk_rule)),
+            session_rule=SessionRuleMutable(**asdict(self.config.session_rule)),
         )
-        self._order_validator = OrderValidator(
-            trading_rule=self._trading_rule,
-            provider=self,
-        )
+        self._order_ticket_book: OrderTicketBook = OrderTicketBook()
+        self._positions: dict = defaultdict()
+        self._intraday_realized_pnl: float = 0.0
 
     @property
-    def latest_data(self):
-        self._latest_data = self._request_intraday_dataframe(snapshot=False)
-        return self._latest_data
+    def _latest_data(self) -> pd.DataFrame:
+        self.__latest_data = self._request_intraday_dataframe(snapshot=False)
+        return self.__latest_data
 
     def on_start(self):
         self._init_daily_reset()
@@ -118,15 +150,15 @@ class ConsolidationAndBreakout(Strategy, DailyResetMixin):
 
         # set timer to froce close the position before the time
         self.clock.set_timer(
-            name="force_close_position",
+            name="forced_close_position_and_orders",
             start_time=self.config.data_start_datetime.replace(
-                hour=self.config.position_rule.forced_close_at.hour,
-                minute=self.config.position_rule.forced_close_at.minute,
-                second=self.config.position_rule.forced_close_at.second,
-                microsecond=self.config.position_rule.forced_close_at.microsecond,
+                hour=self.config.session_rule.forced_close_at.hour,
+                minute=self.config.session_rule.forced_close_at.minute,
+                second=self.config.session_rule.forced_close_at.second,
+                microsecond=self.config.session_rule.forced_close_at.microsecond,
             ),
             interval=datetime.timedelta(days=1),
-            callback=self._forced_close_positions,
+            callback=self._forced_close_positions_and_orders,
         )
         # reset
         self.clock.set_timer(
@@ -137,17 +169,6 @@ class ConsolidationAndBreakout(Strategy, DailyResetMixin):
             interval=datetime.timedelta(days=1),
             callback=self._check_and_reset,
         )
-        # build_watch_list
-        self.clock.set_timer(
-            name="build_watch_list",
-            start_time=self.config.data_start_datetime.replace(
-                hour=self.config.consolidation_end.hour,
-                minute=self.config.consolidation_end.minute,
-                second=self.config.consolidation_end.second,
-            ),
-            interval=datetime.timedelta(days=1),
-            callback=self._build_watch_list,
-        )
 
         # request register
         self.msgbus.register(
@@ -156,29 +177,76 @@ class ConsolidationAndBreakout(Strategy, DailyResetMixin):
         )
 
     def on_bar(self, bar: Bar):
-        if self.clock.utc_now().time() < self.config.session_config.market_open_at:
-            return
-        elif self.clock.utc_now().time() > self.config.session_config.market_close_at:
-            return
-        elif self.clock.utc_now().time() < self.config.consolidation_end:
-            return
-        # setup a time alert event to select best candidate from candidates
-        bar_time = unix_nanos_to_dt(bar.ts_event)
-        if self._current_session_time is None or self._current_session_time != bar_time:
-            self._current_session_time = bar_time
+        self._current_session_bars.append(bar)
+        current_time = self.clock.utc_now()
+        if (
+            self._current_session_time == None
+            or self._current_session_time < current_time
+        ):
+
+            self._current_session_time = current_time
             self.clock.set_time_alert(
-                name="ranking_candidate",
-                alert_time=bar_time + datetime.timedelta(seconds=2),
-                callback=self._ranking_candidate,
+                name="pre_order_data_processing",
+                alert_time=current_time + datetime.timedelta(seconds=2),
+                callback=self._pre_order_data_processing,
             )
-        # if bar.bar_type.spec != BarAggregation.MINUTE:
-        #     pass
-        # select candidate
-        self._select_candidate(bar)
 
     def on_order_initialized(self, event: OrderInitialized) -> None:
-        print(event)
-        print("here====================")
+        pass
+
+    def on_order_submitted(self, event: OrderSubmitted):
+        self._order_ticket_book.update_on_order_submitted(event.client_order_id)
+        self._create_and_append_event(
+            event_type=EventType.ORDER_SUBMITTED,
+            payload={EventPayloadField.INVOLVED: str(event.client_order_id)},
+        )
+
+    def on_order_accepted(self, event: OrderAccepted) -> None:
+        self._order_ticket_book.update_on_order_accepted(event.client_order_id)
+
+    def on_order_rejected(self, event: OrderRejected) -> None:
+        self._order_ticket_book.update_on_order_rejected(event.client_order_id)
+        self._create_and_append_event(
+            event_type=EventType.ORDER_REJECTED,
+            payload={
+                EventPayloadField.INVOLVED: str(event.client_order_id),
+                EventPayloadField.REASON: event.reason,
+            },
+        )
+
+    def on_order_canceled(self, event: OrderCanceled) -> None:
+        self._order_ticket_book.update_on_order_canceled(event.client_order_id)
+        self._create_and_append_event(
+            event_type=EventType.ORDER_CANCELED,
+            payload={
+                EventPayloadField.INVOLVED: str(event.client_order_id),
+            },
+        )
+
+    def on_order_expired(self, event: OrderExpired) -> None:
+        self._order_ticket_book.update_on_order_expired(event.client_order_id)
+        self._create_and_append_event(
+            event_type=EventType.ORDER_EXPIRED,
+            payload={
+                EventPayloadField.INVOLVED: str(event.client_order_id),
+            },
+        )
+
+    def on_order_filled(self, event: OrderFilled) -> None:
+        self._order_ticket_book.update_on_order_filled(event.client_order_id)
+        self._order_ticket_book.update_position_id(
+            event.client_order_id, event.position_id
+        )
+        cot = self._order_ticket_book.get_child_order_ticket(event.client_order_id)
+        if cot is not None:
+            pass
+
+        self._create_and_append_event(
+            event_type=EventType.ORDER_FILLED,
+            payload={
+                EventPayloadField.INVOLVED: str(event.client_order_id),
+            },
+        )
 
     def on_position_closed(self, event: PositionClosed) -> None:
         self._intraday_realized_pnl += event.realized_pnl
@@ -223,7 +291,7 @@ class ConsolidationAndBreakout(Strategy, DailyResetMixin):
             },
         )
         # make event dir
-        self.event_dir.mkdir(parents=True, exist_ok=True)
+        self._event_dir.mkdir(parents=True, exist_ok=True)
 
     # screening, ranking and building watch list
     @lru_cache(maxsize=1)
@@ -265,17 +333,65 @@ class ConsolidationAndBreakout(Strategy, DailyResetMixin):
 
         return cols
 
-    def _screening(self):
-        if self.snapshot_data.empty:
+    def _screening_snapshot_data(self):
+        if self._snapshot_data.empty:
             self._request_intraday_dataframe(snapshot=True)
-        mask = self.snapshot_data.eval(self.screening_query)
-        self.snapshot_data["screening_result"] = mask
+        mask = self._snapshot_data.eval(self._screening_query())
+        self._snapshot_data[self.COL_SCREENING_RESULT] = mask
         self._create_and_append_event(
             event_type=EventType.SCREENING,
             payload={
                 EventPayloadField.SOURCE: "snapshot_data",
             },
         )
+
+    def _build_signal(self, instrument_id: str):
+        sl = []
+        for signal_config in self.config.signal_meta_set:
+            s = SIGNAL_REGISTRY.get(signal_config.name)
+            sl.append(
+                s(
+                    name=signal_config.name,
+                    instrument_id=instrument_id,
+                    factor_configs=signal_config.factor_configs,
+                    provider=self,
+                )
+            )
+
+        return sl
+
+    def _build_watch_list(self):
+        mask = self._snapshot_data.eval(self._screening_query())
+        for k in self._snapshot_data.loc[mask][self.COL_INSTRUMENT_ID]:
+            metrics = (
+                self._snapshot_data.loc[
+                    self._snapshot_data[self.COL_INSTRUMENT_ID] == k,
+                    self._screening_columns(),
+                ]
+                .squeeze()
+                .to_dict()
+            )
+            if k not in self._watch_list.keys():
+                self._watch_list[k] = self._build_signal(k)
+
+                self._create_and_append_event(
+                    event_type=EventType.SELECT_WATCH_LIST,
+                    payload={
+                        EventPayloadField.ACTION: WatchListAction.ADD,
+                        EventPayloadField.INVOLVED: k,
+                        EventPayloadField.SOURCE: "snapshot_data",
+                        EventPayloadField.METRICS: metrics,
+                    },
+                )
+            elif k in self._watch_list.keys():
+                self._create_and_append_event(
+                    event_type=EventType.SELECT_WATCH_LIST,
+                    payload={
+                        EventPayloadField.ACTION: WatchListAction.SKIP,
+                        EventPayloadField.INVOLVED: k,
+                        EventPayloadField.REASON: WatchListActionReason.EXISTED,
+                    },
+                )
 
     @lru_cache(maxsize=1)
     def _ranking_condition_dict(self) -> dict:
@@ -307,95 +423,53 @@ class ConsolidationAndBreakout(Strategy, DailyResetMixin):
                     else:
                         ascending = False
 
-                    n_col = f"{cfg.name}_rank"
+                    n_col = f"{cfg.name}{self.COL_RANK_POSTFIX}"
                     r_cols.append(n_col)
                     df[n_col] = df[f"{cfg.name}"].rank(
                         method="dense", ascending=ascending
                     )
-        # higher ranking sum is better
-        df["rank_sum"] = df[r_cols].sum(axis=1)
-        # for event
-        if df.equals(self.snapshot_data):
-            source = "snapshot_data"
-        elif df.equals(self.latest_data):
-            source = "latest_data"
+        df[f"{self.COL_RANK_SUM}"] = df[r_cols].sum(axis=1)
+
+    def _ranking_snapshot_data(self):
+        self._ranking(df=self._snapshot_data)
         self._create_and_append_event(
             event_type=EventType.RANKING,
             payload={
-                EventPayloadField.SOURCE: source,
+                EventPayloadField.SOURCE: "snapshot_data",
             },
         )
 
-    def _build_signal(self, instrument_id: str):
-        sl = []
-        for signal_config in self.config.signal_meta_set:
-            s = SIGNAL_REGISTRY.get(signal_config.name)
-            sl.append(
-                s(
-                    name=signal_config.name,
-                    instrument_id=instrument_id,
-                    factor_configs=signal_config.factor_configs,
-                    provider=self,
-                )
-            )
-
-        return sl
-
-    def _build_watch_list(self, event):
-        self._screening()  # may have better place to run this method
-        mask = self.snapshot_data.eval(self.screening_query)
-        for k in self.snapshot_data.loc[mask]["instrument_id"]:
-            metrics = (
-                self.snapshot_data.loc[
-                    self.snapshot_data["instrument_id"] == k, self.screening_columns
-                ]
-                .squeeze()
-                .to_dict()
-            )
-            if k not in self.watch_list.keys():
-                self.watch_list[k] = self._build_signal(k)
-
-                self._create_and_append_event(
-                    event_type=EventType.SELECT_WATCH_LIST,
-                    payload={
-                        EventPayloadField.ACTION: WatchListAction.ADD,
-                        EventPayloadField.INVOLVED: k,
-                        EventPayloadField.SOURCE: "snapshot_data",
-                        EventPayloadField.METRICS: metrics,
-                    },
-                )
-            elif k in self.watch_list.keys():
-                self._create_and_append_event(
-                    event_type=EventType.SELECT_WATCH_LIST,
-                    payload={
-                        EventPayloadField.ACTION: WatchListAction.SKIP,
-                        EventPayloadField.INVOLVED: k,
-                        EventPayloadField.REASON: WatchListActionReason.EXISTED,
-                    },
-                )
+    def _ranking_latest_data(self):
+        self._ranking(df=self._latest_data)
+        self._create_and_append_event(
+            event_type=EventType.RANKING,
+            payload={
+                EventPayloadField.SOURCE: "latest_data",
+            },
+        )
 
     # candidate
     def _select_candidate(self, bar):
         instrument_id_string = str(bar.bar_type.instrument_id)
-        for k, v in self.watch_list.items():
+        for k, v in self._watch_list.items():
             # v is a list of Signal
             if instrument_id_string != k:
                 continue
 
             metrics = {}
             for s in v:
-                s.update(bar)
+                s.update(bar)  # signal update
                 metrics[s.name] = {}
                 sm = {}
                 for f in s.factors:
                     sm[f.name] = f.value
                 metrics[s.name] = metrics[s.name] | sm
             signal = all([s.signal for s in v])
-            if instrument_id_string in self.candidate:
+            if instrument_id_string in self._candidate:
                 if signal:
                     continue
                 elif not signal:
-                    self.candidate.remove(k)
+                    self._candidate.remove(k)
                     self._create_and_append_event(
                         event_type=EventType.SELECT_CANDIDATE,
                         payload={
@@ -406,9 +480,9 @@ class ConsolidationAndBreakout(Strategy, DailyResetMixin):
                         },
                     )
 
-            elif not instrument_id_string in self.candidate:
+            elif not instrument_id_string in self._candidate:
                 if signal:
-                    self.candidate.add(k)
+                    self._candidate.add(k)
                     self._create_and_append_event(
                         event_type=EventType.SELECT_CANDIDATE,
                         payload={
@@ -451,13 +525,13 @@ class ConsolidationAndBreakout(Strategy, DailyResetMixin):
             sd[s.name] = s.internal_aggregation_method
         return sd
 
-    def _ranking_candidate(self, event):
+    def _ranking_candidate(self):
         records: list = []
         candidate_count = 0
 
-        for can in self.candidate:
+        for can in self._candidate:
             candidate_count += 1
-            sigs = self.watch_list.get(can)
+            sigs = self._watch_list.get(can)
             for s in sigs:
                 for f in s.factors:
                     record = CandidateFlat(
@@ -483,80 +557,184 @@ class ConsolidationAndBreakout(Strategy, DailyResetMixin):
                 EventPayloadField.METRICS: ranking_metric.model_dump(),
             },
         )
-        self._ranking_metric = ranking_metric
-        # insert a trade preparation event
+        self._candidate_ranking_metric = ranking_metric
+
+    def _pre_order_data_processing(self, event):
+        # may use a class to put the logic
+        if self.clock.utc_now().time() < self.config.consolidation_end:
+            self._current_session_bars = []
+            return
+        # built watch list
+        if self._is_snapshot_data_screened:
+            pass
+        elif not self._is_snapshot_data_screened:
+            self._screening_snapshot_data()
+            self._is_snapshot_data_screened = True
+
+        if self._is_watch_list_built:
+            pass
+        elif not self._is_watch_list_built:
+            self._build_watch_list()
+            self._is_watch_list_built = True
+
+        # select candidate
+        for bar in self._current_session_bars:
+            self._select_candidate(bar)
+        self._current_session_bars = []
+
+        # ranking candidate
+        self._ranking_candidate()
+
         self.clock.set_time_alert(
-            name="trade_preparation",
+            name="pre_order_validation",
             alert_time=self.clock.utc_now() + datetime.timedelta(seconds=2),
-            callback=self._trade_preparation,
+            callback=self._pre_order_validation,
         )
 
-    def _trade_preparation(self, event):
-        metric = self._ranking_metric
-
-        if metric is None:
+    def _pre_order_validation(self, event):
+        if not self._candidate:
+            self._create_and_append_event(
+                event_type=EventType.PRE_ORDER_VALIDATION,
+                payload={
+                    EventPayloadField.ACTION: PreOrderValidationAction.SKIP,
+                    EventPayloadField.REASON: PreOrderValidationReason.NO_CANDIDATE,
+                },
+            )
             return
+
+        validator = ORDER_VALIDATOR_REGISTRY[self.config.order_validator](
+            trading_rule=self._trading_rule, provider=self
+        )
+        metric = validator.validate()
+
+        if not all(metric.values()):
+            self._create_and_append_event(
+                event_type=EventType.PRE_ORDER_VALIDATION,
+                payload={
+                    EventPayloadField.ACTION: PreOrderValidationAction.SKIP,
+                    EventPayloadField.REASON: PreOrderValidationReason.FAIL,
+                    EventPayloadField.METRICS: metric,
+                },
+            )
+            return
+
+        self.clock.set_time_alert(
+            name="create_and_submit_order",
+            alert_time=self.clock.utc_now() + datetime.timedelta(seconds=2),
+            callback=self._create_and_submit_order,
+        )
+
+    def _create_order_ticket_groups(self):
+        metric = self._candidate_ranking_metric
         final_score = metric.final_scores
-        if final_score is None:
-            return
-        # instrument_id, score = next(iter(final_score.items()))
-        # order_config_factory = ORDER_CONFIG_FACTOR_REGISTER[
-        #     f"{self.config.order_config_factory}"
-        # ]
-        # order_config_factory = order_config_factory(
-        #     instrument_id, callback_provider=self
-        # )
-        #
-        # order_config = order_config_factory.making_order()
-        # if self.config.order_type == "bracket":
-        #     order = self.order_factory.bracket(**order_config)
-        # elif self.config.order_type == "market":
-        #     order = self.order_factory.market(**order_config)
-        #
-        # # self._create_and_append_event(event_type=EventType.MAKING_ORDER)
-        #
-        # print(order)
+        instrument_id, score = next(iter(final_score.items()))
+        order_composer = ORDER_COMPOSER_REGISTRY[self.config.order_composer](
+            instrument_id=instrument_id, provider=self
+        )
+        order_composer.compose()
+        order_tickets = order_composer._order_ticket_groups
+        return order_tickets
 
-    # order / position
-    def _pre_order_check(self, order: Order, order_value: float) -> tuple[bool, str]:
-        """
-        Return the desicion and the reason for why the order placeing attemptation is accepted/refused
-        """
-        venue = order.instrument_id.venue
-        # # check prosition open
-        # open_positions = len(self.cache.positions_open())
-        # if open_positions >= self.config.trading_rule.open_position_maximum:
-        #     return (
-        #         False,
-        #         f"Size of open positions reach the open position maximum {self.config.trading_rule.open_position_maximum}",
-        #     )
-        #
-        # open_order = self.cache.orders_open()
-        # if open_order >= self.config.trading_rule.open_order_maximum:
-        #     return (
-        #         False,
-        #         f"Size of open order reach the open order maximum {self.config.trading_rule.open_order_maximum}",
-        #     )
-        # # only one open order or position for a instrument id
-        # if self.cache.orders_open_count(instrument_id=order.instrument_id) > 0:
-        #     return (
-        #         False,
-        #         f"Open order for the instrument {order.instrument_id} exist.",
-        #     )
-        # if self.cache.positions_open(instrument_id=order.instrument_id) > 0:
-        #     return (
-        #         False,
-        #         f"Open position for the instrument {order.instrument_id} exist.",
-        #     )
-        #
-        # account = self.portfolio.account(venue)
-        # balance = account.balance(self.config.venue_currency_pair[venue])
-        # if balance.free.as_double() > order_value:
-        #     return (True, "")
-        # # might require to implement the logic of comparing which trade is better and change the order
-        # elif balance.free.as_double() <= order_value:
-        #     return (False, "Not enough balance.")
+    def _create_and_register_order_ticket(
+        self, order_ticket_groups: list[OrderTicketGroup]
+    ):
+        tickets = []
+        for otg in order_ticket_groups:
+            p_order_ticket = otg.parent
+            c_order_ticket = otg.child
+            # create child order
+            c_order = self._create_order(c_order_ticket)
+            c_order_ticket.client_order_id = c_order.client_order_id
+            c_order_ticket.order = c_order
+            # creat parent order
+            p_order = self._create_order(p_order_ticket)
+            p_order_ticket.order = p_order
+            p_order_ticket.client_order_id = p_order.client_order_id
+            tickets.append(p_order_ticket)
+            tickets.append(c_order_ticket)
 
+            c_order_ticket.parent_order_id = p_order.client_order_id
+            c_order_ticket.state = OrderState.CREATED
+            p_order_ticket.child_order_id = c_order.client_order_id
+            p_order_ticket.state = OrderState.CREATED
+            self._order_ticket_book.register_ticket(
+                client_order_id=p_order.client_order_id, order_ticket=p_order_ticket
+            )
+            self._order_ticket_book.register_ticket(
+                client_order_id=c_order.client_order_id, order_ticket=c_order_ticket
+            )
+            self._create_and_append_event(
+                event_type=EventType.ORDER_CREATED,
+                payload={
+                    EventPayloadField.DETAIL: p_order_ticket.model_dump(
+                        context={"readable": True}
+                    )
+                },
+            )
+            self._create_and_append_event(
+                event_type=EventType.ORDER_CREATED,
+                payload={
+                    EventPayloadField.DETAIL: c_order_ticket.model_dump(
+                        context={"readable": True}
+                    )
+                },
+            )
+
+        return tickets
+
+    def _create_order(self, order_ticket: OrderTicket):
+        if order_ticket.entry_order_type == OrderType.MARKET:
+            order = self._create_market_order(order_ticket)
+        elif order_ticket.entry_order_type == OrderType.STOP_MARKET:
+            order = self._create_stop_market_order(order_ticket)
+        elif order_ticket.entry_order_type == OrderType.LIMIT:
+            order = self._create_limit_order(order_ticket)
+        self._create_and_append_event(
+            event_type=EventType.ORDER_TICKET_CREATED,
+            payload={
+                EventPayloadField.DETAIL: order_ticket.model_dump(
+                    context={"readable": True}
+                )
+            },
+        )
+        return order
+
+    def _create_and_submit_order(self, event):
+        order_ticket_group = self._create_order_ticket_groups()
+        order_tickets = self._create_and_register_order_ticket(order_ticket_group)
+        for ot in order_tickets:
+            if ot.role == OrderRole.PARENT:
+                self.submit_order(ot.order)
+
+    # orders helper function
+    def _create_market_order(self, order_ticket: OrderTicket) -> Order:
+        order = self.order_factory.market(
+            instrument_id=order_ticket.instrument_id,
+            order_side=order_ticket.order_side,
+            quantity=order_ticket.quantity,
+            time_in_force=order_ticket.time_in_force,
+        )
+        return order
+
+    def _create_limit_order(self, order_ticket: OrderTicket) -> Order:
+        pass
+
+    def _create_stop_limit_order(self, order_ticket: OrderTicket) -> Order:
+        pass
+
+    def _create_stop_market_order(self, order_ticket: OrderTicket) -> Order:
+        order = self.order_factory.stop_market(
+            instrument_id=order_ticket.instrument_id,
+            order_side=order_ticket.order_side,
+            quantity=order_ticket.quantity,
+            trigger_price=order_ticket.trigger_price,
+            time_in_force=order_ticket.time_in_force,
+            expire_time=order_ticket.expire_time,
+            reduce_only=True,
+        )
+        return order
+
+    # position
     def _closing_position(self):
         # closing position logic
         # close the position that no new high during past five minute
@@ -567,33 +745,36 @@ class ConsolidationAndBreakout(Strategy, DailyResetMixin):
             # get the current high from subscribed dataframe and
             pass
 
-    def _forced_close_positions(self, event):
-        for position in self.cache.positions_open():
-            self.close_position(position)
-            # put the record some where
+    def _forced_close_positions_and_orders(self, event):
+        tickets = self._order_ticket_book.get_tickets()
+        for ot in tickets.values():
+            if self.cache.is_position_open(ot.position_id):
+                self.close_position(self.cache.position(ot.position_id))
+            if ot.state == OrderState.ACCEPTED:
+                self.cancel_order(self.cache.order(ot.client_order_id))
 
     # callbacks
     def get_snapshot_intraday_high(self, instrument_id: str) -> float:
-        v = self.snapshot_data.loc[
-            self.snapshot_data["instrument_id"] == instrument_id, "intraday_high"
+        v = self._snapshot_data.loc[
+            self._snapshot_data["instrument_id"] == instrument_id, "intraday_high"
         ].item()
         return v
 
     def get_snapshot_intraday_low(self, instrument_id: str) -> float:
-        v = self.snapshot_data.loc[
-            self.snapshot_data["instrument_id"] == instrument_id, "intraday_low"
+        v = self._snapshot_data.loc[
+            self._snapshot_data["instrument_id"] == instrument_id, "intraday_low"
         ].item()
         return v
 
     def get_intraday_atr(self, instrument_id: str) -> float:
-        v = self.latest_data.loc[
-            self.latest_data["instrument_id"] == instrument_id, "intraday_atr"
+        v = self._latest_data.loc[
+            self._latest_data["instrument_id"] == instrument_id, "intraday_atr"
         ].item()
         return v
 
     def get_latest_bar_with_trading_bar_type(self, instrument_id: str) -> Bar:
         target_bar_type = self.instrument_bar_type_map.get(instrument_id)[
-            self._order_validator.order_rule.trading_bar_type
+            self._trading_rule.order_rule.trading_bar_type
         ]
         bar = self.cache.bars(target_bar_type)[0]
         return bar
@@ -609,6 +790,15 @@ class ConsolidationAndBreakout(Strategy, DailyResetMixin):
         instrument = self.cache.instrument(instrument_id)
         return instrument
 
+    def get_current_datetime(self) -> datetime.datetime:
+        return self.clock.utc_now()
+
+    def get_order_ticket_book(self) -> OrderTicketBook:
+        return self._order_ticket_book
+
+    def get_positions(self) -> dict:
+        return self._positions
+
     # event log
     def _create_and_append_event(
         self, event_type: EventType, payload: dict = defaultdict()
@@ -621,11 +811,11 @@ class ConsolidationAndBreakout(Strategy, DailyResetMixin):
             payload=payload,
         )
 
-        self.events.append(event)
+        self._events.append(event)
 
     def _save_events(self):
         records = []
-        for e in self.events:
+        for e in self._events:
             te = e.model_dump(mode="python")
             te["payload"] = json.dumps(te["payload"])
             records.append(te)
@@ -633,7 +823,7 @@ class ConsolidationAndBreakout(Strategy, DailyResetMixin):
         date = self.clock.utc_now().date().isoformat()
 
         df.to_parquet(
-            self.event_dir / f"{date}.parquet",
+            self._event_dir / f"{date}.parquet",
             engine="pyarrow",
             compression="snappy",
             index=False,
@@ -659,31 +849,34 @@ class ConsolidationAndBreakout(Strategy, DailyResetMixin):
         # reset variables
         self._current_session_date: datetime.date | None = None
         self._current_session_time: datetime.time | None = None
-        self.candidate = set()
-        self.screening_query = self._screening_query()
-        self.screening_columes = []
-        self._latest_data = pd.DataFrame()
-        self.latest_data_updated_at = None
-        self.snapshot_data = pd.DataFrame()
-        self.watch_list: dict[str, list[BaseSignal]] = defaultdict()
-        self.events = []
+        self._current_session_bars: list[Bar] = []
+        self._candidate = set()
+        self.__latest_data = pd.DataFrame()
+        self._latest_data_updated_at = None
+        self._snapshot_data = pd.DataFrame()
+        self._is_snapshot_data_screened: bool = False
+        self._watch_list: dict[str, list[BaseSignal]] = defaultdict()
+        self._is_watch_list_built: bool = False
+        self._events = []
         self._intraday_realized_pnl: float = 0.0
-        self._ranking_metric = None
+        self._candidate_ranking_metric = None
+        self._order_ticket_book: OrderTicketBook = OrderTicketBook()
+        self._positions: dict = defaultdict()
 
     # request / response method
     def _request_intraday_dataframe(self, snapshot: bool):
         if not snapshot:
             time = self.clock.utc_now().time()
             if (
-                self.latest_data_updated_at is None
-                or self.latest_data_updated_at < time
+                self._latest_data_updated_at is None
+                or self._latest_data_updated_at < time
             ):
-                self.latest_data_updated_at = time
+                self._latest_data_updated_at = time
                 self.msgbus.send(
                     endpoint=self.config.msg_outbound_endpoint,
                     msg=IntradayDataFrameRequest(snapshot=snapshot),
                 )
-            elif self.latest_data_updated_at == time:
+            elif self._latest_data_updated_at == time:
                 pass
         elif snapshot:
             self.msgbus.send(
@@ -698,6 +891,6 @@ class ConsolidationAndBreakout(Strategy, DailyResetMixin):
     @_dispatch_msg.register
     def _intraday_data_frame(self, msg: IntradayDataFrameResponse) -> None:
         if msg.snapshot:
-            self.snapshot_data = msg.data
+            self._snapshot_data = msg.data
         else:
-            self._latest_data = msg.data
+            self.__latest_data = msg.data

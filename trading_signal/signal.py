@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from nautilus_trader.model import Bar
 
 from protocols.provider import Provider
-from signal.factor import FactorConfig, FACTOR_REGISTRY
+from trading_signal.factor import FactorConfig, FACTOR_REGISTRY
 from schemas import AggregationMethod
 
 

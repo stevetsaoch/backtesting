@@ -488,21 +488,25 @@ class EventType(str, enum.Enum):
     # ranking candidate to find the candidate which has highest metric
     RANKING_CANDIDATE = "ranking_candidate"
     #
-    MAKING_ORDER = "making_order"
-    #
     PRE_ORDER_VALIDATION = "pre_order_validation"
     #
-    PLACING_ORDER = "placing_order"
+    ORDER_TICKET_CREATED = "order_ticket_created"
     #
-    FILLED_ORDER = "filled_order"
+    ORDER_CREATED = "order_created"
     #
-    PARTIALLY_FILLED_ORDER = "partially_filled_order"
+    ORDER_SUBMITTED = "order_submitted"
     #
-    MODIFIED_ORDER = "modified_order"
+    ORDER_FILLED = "order_filled"
     #
-    CANCELED_ORDER = "canceled_order"
+    ORDER_PARTIALLY_FILLED = "order_partially_filled"
     #
-    REJECTED_ORDER = "rejected_order"
+    ORDER_MODIFIED = "order_modified"
+    #
+    ORDER_CANCELED = "order_canceled"
+    #
+    ORDER_REJECTED = "order_rejected"
+    #
+    ORDER_EXPIRED = "order_expired"
     #
     MONITORING_POSITION = "monitoring_position"
     #
@@ -511,6 +515,15 @@ class EventType(str, enum.Enum):
     ADJUSTED_POSITION = "adjusted_position"
     #
     CLOSED_POSITION = "closed_position"
+
+
+class PreOrderValidationAction(str, enum.Enum):
+    SKIP = "skip"
+
+
+class PreOrderValidationReason(str, enum.Enum):
+    NO_CANDIDATE = "no candidate"
+    FAIL = "fail"
 
 
 class WatchListAction(str, enum.Enum):
@@ -546,6 +559,7 @@ class EventPayloadField(str, enum.Enum):
     SNAPSHOT = "snapshot"
     DESCRIPTION = "description"
     CONFIG = "config"
+    DETAIL = "detail"
 
 
 class Event(BaseModel):
@@ -642,24 +656,9 @@ class AccountConfig:
 
 
 @dataclass(frozen=True)
-class TradingRule:
-    balance: float
-    position_value_ratio: float
-    position_value_maximum: float
-    position_maximum: float
-    order_maximum: float
-    order_value_maximum: float
-    maximum_lose_per_day: float
-    risk_ratio: float
-    stop_buffer: float
-    trading_bar_type: str
-    forced_close_at: datetime.time
-
-
-@dataclass(frozen=True)
 class OrderRules:
     trading_bar_type: str
-    order_maximum: float
+    order_total_count_maximum: float
     order_value_maximum: float
 
 
@@ -667,8 +666,7 @@ class OrderRules:
 class PositionRules:
     position_value_ratio: float
     position_value_maximum: float
-    position_maximum: float
-    forced_close_at: datetime.time
+    position_total_count_maximum: float
 
 
 @dataclass(frozen=True)
@@ -679,17 +677,24 @@ class RiskRules:
     maximum_lose_per_day: float
 
 
+@dataclass(frozen=True)
+class SessionRule:
+    market_open_at: datetime.time
+    market_close_at: datetime.time
+    trading_start_at: datetime.time
+    forced_close_at: datetime.time
+
+
 class OrderRulesMutable(BaseModel):
     trading_bar_type: str
-    order_maximum: float
+    order_total_count_maximum: float
     order_value_maximum: float
 
 
 class PositionRulesMutable(BaseModel):
     position_value_ratio: float
     position_value_maximum: float
-    position_maximum: float
-    forced_close_at: datetime.time
+    position_total_count_maximum: float
 
 
 class RiskRulesMutable(BaseModel):
@@ -699,10 +704,18 @@ class RiskRulesMutable(BaseModel):
     maximum_lose_per_day: float
 
 
+class SessionRuleMutable(BaseModel):
+    market_open_at: datetime.time
+    market_close_at: datetime.time
+    trading_start_at: datetime.time
+    forced_close_at: datetime.time
+
+
 class TradingRulesMutable(BaseModel):
     order_rule: OrderRulesMutable
     position_rule: PositionRulesMutable
     risk_rule: RiskRulesMutable
+    session_rule: SessionRuleMutable
 
 
 @dataclass(frozen=True)

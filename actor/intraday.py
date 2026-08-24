@@ -25,7 +25,6 @@ class ConsolidationAndBreakoutIndicatorManageActorConfig(ActorConfig, frozen=Tru
     consolidation_end: (
         datetime.time
     )  # time point which decide when the consolidation period end
-    session_config: SessionConfig
     msg_enpoint: str
     msg_outbound_endpoint: str
 

@@ -16,7 +16,6 @@ from schemas import (
     DataConfig,
     NautilusBarType,
     NautilusInstrumentId,
-    SessionConfig,
     TieBreakingMethod,
     AggregationMethod,
     PercentileRankingConfig,
@@ -25,11 +24,12 @@ from schemas import (
     OrderRules,
     PositionRules,
     RiskRules,
+    SessionRule,
 )
 from indicator.field import IndicatorFieldConfig
 from indicator.indicator import IndicatorMeta
-from strategy.factor import FactorConfig
-from strategy.signal import SignalMeta
+from trading_signal.factor import FactorConfig
+from trading_signal.signal import SignalMeta
 from config import NAUTILUS_CONFIG, VENUE_CONFIG
 
 # global variables
@@ -227,6 +227,7 @@ orb_entry_signal = SignalMeta(
 )
 # other
 consolidation_end: datetime.time = datetime.time(10, 30, 0)
+
 # trading rule
 balance = VENUE_CONFIG.starting_balances
 position_value_ratio = 0.8
@@ -236,21 +237,24 @@ order_maximum = 2.0
 order_value_maximum = position_value_maximum / order_maximum
 risk_ratio = 0.02
 maximum_lose_per_day = balance * risk_ratio
-forced_close_at = datetime.time(15, 30, 0, 0)
 trading_bar_type = f"1-MINUTE-LAST"
 stop_price_buffer = 0.02
 risk_ratio = 0.02
+market_open_at = datetime.time(9, 30, 0)
+market_close_at = datetime.time(16, 0, 0)
+trading_start_at = datetime.time(10, 30, 0)
+forced_close_at = datetime.time(15, 30, 0)
+
 # rules
 order_rule: OrderRules = OrderRules(
     trading_bar_type=trading_bar_type,
-    order_maximum=order_maximum,
+    order_total_count_maximum=order_maximum,
     order_value_maximum=order_value_maximum,
 )
 position_rule: PositionRules = PositionRules(
     position_value_ratio=position_value_ratio,
     position_value_maximum=position_value_maximum,
-    position_maximum=position_maximum,
-    forced_close_at=forced_close_at,
+    position_total_count_maximum=position_maximum,
 )
 risk_rule: RiskRules = RiskRules(
     balance=balance,
@@ -258,10 +262,17 @@ risk_rule: RiskRules = RiskRules(
     maximum_lose_per_day=maximum_lose_per_day,
     risk_ratio=risk_ratio,
 )
-# session
-session_config = SessionConfig(
-    market_open_at=datetime.time(9, 30, 0), market_close_at=datetime.time(16, 1, 0)
+session_rule: SessionRule = SessionRule(
+    market_open_at=market_open_at,
+    market_close_at=market_close_at,
+    trading_start_at=trading_start_at,
+    forced_close_at=forced_close_at,
 )
+# order
+order_validator = "orb_order_validator"
+order_composer = "orb_order_composer"
+order_type = "bracket"
+# session
 name = "test_backtesting"
 signal_aggregation_method = AggregationMethod.MINIMUM
 order_config_factory = "orb_long_bracket_order_config_factory"
@@ -276,7 +287,6 @@ a = ImportableActorConfig(
         "bar_types": bar_types,
         "indicator_meta_set": [intraday_1_min],
         "consolidation_end": consolidation_end,
-        "session_config": session_config,
         "msg_enpoint": "consolidation.actor",
         "msg_outbound_endpoint": "consolidation.strategy",
     },
@@ -292,12 +302,14 @@ s = ImportableStrategyConfig(
         "bar_types": bar_types,
         "indicator_meta_set": [intraday_1_min],
         "consolidation_end": consolidation_end,
-        "session_config": session_config,
         "order_rule": order_rule,
         "position_rule": position_rule,
         "risk_rule": risk_rule,
+        "session_rule": session_rule,
         "order_config_factory": order_config_factory,
-        "order_type": "bracket",
+        "order_type": order_type,
+        "order_validator": order_validator,
+        "order_composer": order_composer,
         "signal_meta_set": [orb_entry_signal],
         "signal_aggregation_method": signal_aggregation_method,
         # hard code

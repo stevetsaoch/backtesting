@@ -1,7 +1,9 @@
+import datetime
 from typing import Protocol
 from nautilus_trader.model import Bar
+from nautilus_trader.model.orders import Order
 from nautilus_trader.model.instruments import Instrument
-from order.order_validator import TradingRulesMutable
+from schemas import TradingRulesMutable
 
 
 class Provider(Protocol):
@@ -16,6 +18,8 @@ class ActorInfoProvider(Provider):
     def get_intraday_realized_pnl(self) -> float: ...
     def get_trading_rule(self) -> TradingRulesMutable: ...
     def get_instrument(self, instrument_id: str) -> Instrument: ...
+    def get_current_datetime(self) -> datetime.datetime: ...
+    def get_positions(self) -> dict: ...
 
 
 PROVIDER_REGISTRY = {"actor_info_provider": ActorInfoProvider}
