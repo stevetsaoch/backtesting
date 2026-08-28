@@ -1,6 +1,5 @@
 import datetime
-from typing import Protocol
-from abc import abstractmethod
+from abc import ABC, abstractmethod
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
 
@@ -26,6 +25,7 @@ class IndicatorFieldConfig:
     field_name: str
     field_type: str
     depends_on: tuple[str, ...]
+    bar_spec_requirement: str
     params: dict | None = field(default=None)
     operator: Operator | None = field(default=None)
     threshold: float | None = field(default=None)
@@ -33,7 +33,10 @@ class IndicatorFieldConfig:
 
 
 # fields
-class IndicatorField(Protocol):
+class IndicatorField(ABC):
+    def __init__(self, bar_spec_requirement: str):
+        self.bar_spec_requirement = bar_spec_requirement
+
     def update(
         self, bar: Bar
     ) -> float | datetime.time | datetime.date | datetime.datetime: ...
@@ -46,9 +49,13 @@ class IndicatorField(Protocol):
     @abstractmethod
     def reset(self) -> None: ...
 
+    @abstractmethod
+    def _check_bar_spec(self, bar: Bar) -> bool: ...
+
 
 class IntradayOpenField(IndicatorField):
-    def __init__(self):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
         self._value_default = float("-inf")
         self._value = float("-inf")
 
@@ -66,9 +73,19 @@ class IntradayOpenField(IndicatorField):
     def reset(self):
         self._value = self._value_default
 
+    def _check_bar_spec(self, bar: Bar) -> bool:
+        if (
+            f"{bar.bar_type.spec.step}-{bar.bar_type.spec.aggregation}"
+            != self.bar_spec_requirement
+        ):
+            return False
+        else:
+            return True
+
 
 class IntradayHighField(IndicatorField):
-    def __init__(self):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
         self._value_default = float("-inf")
         self._value = float("-inf")
 
@@ -83,9 +100,19 @@ class IntradayHighField(IndicatorField):
     def reset(self):
         self._value = self._value_default
 
+    def _check_bar_spec(self, bar: Bar) -> bool:
+        if (
+            f"{bar.bar_type.spec.step}-{bar.bar_type.spec.aggregation}"
+            != self.bar_spec_requirement
+        ):
+            return False
+        else:
+            return True
+
 
 class IntradayLowField(IndicatorField):
-    def __init__(self):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
         self._value_default = float("inf")
         self._value = float("inf")
 
@@ -100,9 +127,19 @@ class IntradayLowField(IndicatorField):
     def reset(self):
         self._value = self._value_default
 
+    def _check_bar_spec(self, bar: Bar) -> bool:
+        if (
+            f"{bar.bar_type.spec.step}-{bar.bar_type.spec.aggregation}"
+            != self.bar_spec_requirement
+        ):
+            return False
+        else:
+            return True
+
 
 class IntradayHighUpdatedAtField(IndicatorField):
-    def __init__(self, intraday_high: IndicatorField):
+    def __init__(self, intraday_high: IndicatorField, *args, **kwargs):
+        super().__init__(*args, **kwargs)
         self._intraday_high = intraday_high
         self._last_value = None
         self._value_default = None
@@ -122,9 +159,19 @@ class IntradayHighUpdatedAtField(IndicatorField):
     def reset(self):
         self._value = self._value_default
 
+    def _check_bar_spec(self, bar: Bar) -> bool:
+        if (
+            f"{bar.bar_type.spec.step}-{bar.bar_type.spec.aggregation}"
+            != self.bar_spec_requirement
+        ):
+            return False
+        else:
+            return True
+
 
 class IntradayLowUpdatedAtField(IndicatorField):
-    def __init__(self, intraday_low: IndicatorField):
+    def __init__(self, intraday_low: IndicatorField, *args, **kwargs):
+        super().__init__(*args, **kwargs)
         self._intraday_low = intraday_low
         self._last_value = None
         self._value_default = None
@@ -144,9 +191,19 @@ class IntradayLowUpdatedAtField(IndicatorField):
     def reset(self):
         self._value = self._value_default
 
+    def _check_bar_spec(self, bar: Bar) -> bool:
+        if (
+            f"{bar.bar_type.spec.step}-{bar.bar_type.spec.aggregation}"
+            != self.bar_spec_requirement
+        ):
+            return False
+        else:
+            return True
+
 
 class IntradayTradingValueField(IndicatorField):
-    def __init__(self):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
         self._value_default = 0.0
         self._value = 0.0
 
@@ -167,6 +224,15 @@ class IntradayTradingValueField(IndicatorField):
     def reset(self):
         self._value = self._value_default
 
+    def _check_bar_spec(self, bar: Bar) -> bool:
+        if (
+            f"{bar.bar_type.spec.step}-{bar.bar_type.spec.aggregation}"
+            != self.bar_spec_requirement
+        ):
+            return False
+        else:
+            return True
+
 
 class IntradayAmplitudeField(IndicatorField):
     def __init__(
@@ -174,7 +240,10 @@ class IntradayAmplitudeField(IndicatorField):
         intraday_high: IndicatorField,
         intraday_open: IndicatorField,
         intraday_low: IndicatorField,
+        *args,
+        **kwargs,
     ):
+        super().__init__(*args, **kwargs)
         self._high = intraday_high
         self._low = intraday_low
         self._open = intraday_open
@@ -192,9 +261,19 @@ class IntradayAmplitudeField(IndicatorField):
     def reset(self):
         self._value = self._value_default
 
+    def _check_bar_spec(self, bar: Bar) -> bool:
+        if (
+            f"{bar.bar_type.spec.step}-{bar.bar_type.spec.aggregation}"
+            != self.bar_spec_requirement
+        ):
+            return False
+        else:
+            return True
+
 
 class IntradayATRField(IndicatorField):
-    def __init__(self, bar_buffer_size: int):
+    def __init__(self, bar_buffer_size: int, *args, **kwargs):
+        super().__init__(*args, **kwargs)
         self._value_default = float("-inf")
         self._value = float("-inf")
         self.bar_buffer_size = bar_buffer_size
@@ -230,6 +309,15 @@ class IntradayATRField(IndicatorField):
             abs(self.bars[-1].low.as_double() - self.bars[-2].close.as_double()),
         )
         self.atr_n.append(tr)
+
+    def _check_bar_spec(self, bar: Bar) -> bool:
+        if (
+            f"{bar.bar_type.spec.step}-{bar.bar_type.spec.aggregation}"
+            != self.bar_spec_requirement
+        ):
+            return False
+        else:
+            return True
 
 
 FIELD_REGISTRY: dict[str, type] = {

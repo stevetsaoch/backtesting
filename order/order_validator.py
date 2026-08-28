@@ -1,19 +1,20 @@
+from typing import Generic
 from abc import ABC
 from schemas import TradingRulesMutable
-from protocols.provider import ActorInfoProvider
+from protocols.provider import PG, ActorInfoProvider
 
 
-class DefaultOrderValidator(ABC):
+class DefaultOrderValidator(ABC, Generic[PG]):
     def __init__(
         self,
         trading_rule: TradingRulesMutable,
-        provider: ActorInfoProvider,
+        provider: PG,
     ):
         self._trading_rule: TradingRulesMutable = trading_rule
         self._provider = provider
 
 
-class ORBOrderValidator(DefaultOrderValidator):
+class ORBOrderValidator(DefaultOrderValidator[ActorInfoProvider]):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._metrics: dict[str, bool] = {}

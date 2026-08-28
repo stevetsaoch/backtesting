@@ -1,13 +1,15 @@
 import datetime
-from typing import Protocol
+from typing import Protocol, TypeVar
 from nautilus_trader.model import Bar
-from nautilus_trader.model.orders import Order
 from nautilus_trader.model.instruments import Instrument
 from schemas import TradingRulesMutable
 
 
 class Provider(Protocol):
     pass
+
+
+PG = TypeVar("PG", bound=Provider)
 
 
 class ActorInfoProvider(Provider):

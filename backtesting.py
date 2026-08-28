@@ -120,18 +120,21 @@ intraday_open = IndicatorFieldConfig(
     field_name="intraday_open",
     field_type="float",
     depends_on=(),
+    bar_spec_requirement=f"1-{BarAggregation.MINUTE}",
 )
 intraday_high = IndicatorFieldConfig(
     name="intraday_high",
     field_name="intraday_high",
     field_type="float",
     depends_on=(),
+    bar_spec_requirement=f"1-{BarAggregation.MINUTE}",
 )
 intraday_low = IndicatorFieldConfig(
     name="intraday_low",
     field_name="intraday_low",
     field_type="float",
     depends_on=(),
+    bar_spec_requirement=f"1-{BarAggregation.MINUTE}",
 )
 intraday_trading_value = IndicatorFieldConfig(
     name="intraday_trading_value",
@@ -140,18 +143,21 @@ intraday_trading_value = IndicatorFieldConfig(
     operator=Operator.GTE,
     threshold=10_000.0,
     depends_on=(),
+    bar_spec_requirement=f"1-{BarAggregation.MINUTE}",
 )
 intraday_high_updated_at = IndicatorFieldConfig(
     name="intraday_high_updated_at",
     field_name="intraday_high_updated_at",
     field_type="datetime.time",
     depends_on=("intraday_high",),
+    bar_spec_requirement=f"1-{BarAggregation.MINUTE}",
 )
 intraday_low_updated_at = IndicatorFieldConfig(
     name="intraday_low_updated_at",
     field_name="intraday_low_updated_at",
     field_type="datetime.time",
     depends_on=("intraday_low",),
+    bar_spec_requirement=f"1-{BarAggregation.MINUTE}",
 )
 intraday_amplitude = IndicatorFieldConfig(
     name="intraday_amplitude",
@@ -164,6 +170,7 @@ intraday_amplitude = IndicatorFieldConfig(
         "intraday_low",
         "intraday_open",
     ),
+    bar_spec_requirement=f"1-{BarAggregation.MINUTE}",
 )
 intraday_atr = IndicatorFieldConfig(
     name="intraday_atr",
@@ -173,11 +180,11 @@ intraday_atr = IndicatorFieldConfig(
     threshold=10.0,
     depends_on=(),
     params={"bar_buffer_size": 14},
+    bar_spec_requirement=f"1-{BarAggregation.MINUTE}",
 )
 intraday_1_min = IndicatorMeta(
     name="intraday_1_min",
     indicator_name="intraday_short_period",
-    bar_spec_requirements=[f"1-{BarAggregation.MINUTE}"],
     field_configs=[
         intraday_open,
         intraday_low,
@@ -198,6 +205,7 @@ clv_factor = FactorConfig(
     ascending=True,
     provider="factor_provider",
     bar_buffer_size=2,
+    bar_spec_requirement=f"1-{BarAggregation.MINUTE}",
     ranking_config=RankingConfigs(
         percentile=PercentileRankingConfig(
             tie_breaking_method=TieBreakingMethod.MINIMUM, ascending=True
@@ -211,6 +219,7 @@ two_bar_higher_close = FactorConfig(
     threshold=0.0,
     ascending=False,
     bar_buffer_size=2,
+    bar_spec_requirement=f"1-{BarAggregation.MINUTE}",
     provider="factor_provider",
     ranking_config=RankingConfigs(
         percentile=PercentileRankingConfig(
@@ -334,6 +343,7 @@ btrc = BacktestRunConfig(
     ),
     data=dcfs,
     venues=[backtest_venue_config],
+    dispose_on_completion=False,
 )
 
 

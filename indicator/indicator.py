@@ -12,7 +12,6 @@ from indicator.field import IndicatorFieldConfig, IndicatorField, FIELD_REGISTRY
 @dataclass(frozen=True)
 class NativeIndicatorMeta:
     indicator_name: str
-    bar_spec_requirements: list[str]
     snapshot_time: datetime.time | None = field(default=None)
 
 
@@ -24,7 +23,6 @@ class IndicatorMeta:
 
     name: str
     indicator_name: str
-    bar_spec_requirements: list[str]
     field_configs: list[IndicatorFieldConfig]
     # normally all indicator will be same.....
     snapshot_time: datetime.time | None = field(default=None)
@@ -45,7 +43,9 @@ def build_fields(configs: list[IndicatorFieldConfig]) -> dict[str, IndicatorFiel
         cls = FIELD_REGISTRY[cfg.field_name]
         dep_fields = {dep_name: fields[dep_name] for dep_name in cfg.depends_on}
         params = cfg.params if cfg.params else {}
-        fields[name] = cls(**dep_fields, **params)
+        fields[name] = cls(
+            **dep_fields, **params, bar_spec_requirement=cfg.bar_spec_requirement
+        )
     return fields
 
 

@@ -1,10 +1,10 @@
-from typing import Any
+from typing import Any, Generic
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
 from nautilus_trader.model import Bar
 
-from protocols.provider import Provider
+from protocols.provider import Provider, PG
 from trading_signal.factor import FactorConfig, FACTOR_REGISTRY
 from schemas import AggregationMethod
 
@@ -31,18 +31,19 @@ def build_factor(
             operator=c.operator,
             threshold=c.threshold,
             bar_buffer_size=c.bar_buffer_size,
+            bar_spec_requirement=c.bar_spec_requirement,
         )
         factors.append(f)
     return factors
 
 
-class BaseSignal(ABC):
+class BaseSignal(ABC, Generic[PG]):
     def __init__(
         self,
         name: str,
         instrument_id: str,
         factor_configs: list[FactorConfig],
-        provider: Provider,
+        provider: PG,
     ):
         self.name = name
         self.factor_configs = factor_configs

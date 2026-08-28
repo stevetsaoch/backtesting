@@ -2,15 +2,17 @@ import enum
 import datetime
 from typing import TypeVar, Generic
 from abc import ABC, abstractmethod
+from decimal import Decimal
 from pydantic import BaseModel, model_serializer, ConfigDict, Field
 from pydantic_core.core_schema import SerializationInfo
 
-from nautilus_trader.model import InstrumentId, ClientOrderId, PositionId
 from nautilus_trader.model.orders import Order
+from nautilus_trader.model import InstrumentId, ClientOrderId, PositionId, Bar
 from nautilus_trader.model.enums import OrderSide, OrderType, TimeInForce
 from nautilus_trader.model.objects import Price, Quantity
 
-from protocols.provider import Provider, ActorInfoProvider
+
+from protocols.provider import Provider, ActorInfoProvider, PG
 from schemas import TradingRulesMutable
 
 
@@ -33,16 +35,28 @@ class OrderRole(str, enum.Enum):
 
 class OrderTicket(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
+    # time
+    created_at: datetime.time | None = None
+    accepted_at: datetime.time | None = None
+    submitted_at: datetime.time | None = None
+    rejected_at: datetime.time | None = None
+    canceled_at: datetime.time | None = None
+    expired_at: datetime.time | None = None
+    filled_at: datetime.time | None = None
     # for event log
     state: OrderState = Field(default=OrderState.REQUEST)
     role: OrderRole | None = None
     client_order_id: ClientOrderId | None = None
     reference_price: float | None = None
     risk_price: float | None = None
-    child_order_id: str | None = None
-    parent_order_id: str | None = None
-    position_id: PositionId | None = None
+    child_order_id: ClientOrderId | None = None
+    parent_order_id: ClientOrderId | None = None
     order: Order | None = None
+    # position
+    position_id: PositionId | None = None
+    filled_price_qty: list[tuple[float, float]] = []
+    maximum_favorable_excursion: float | None = None
+    maximum_adverse_excursion: float | None = None
     #
     instrument_id: InstrumentId | None = None
     order_side: OrderSide | None = None
@@ -81,6 +95,8 @@ class OrderTicket(BaseModel):
                 data[k] = float(v)
             elif isinstance(v, ClientOrderId):
                 data[k] = str(v)
+            elif isinstance(v, Order):
+                data[k] = None
             elif isinstance(v, PositionId):
                 data[k] = str(v)
             elif isinstance(v, InstrumentId):
@@ -135,6 +151,7 @@ class OrderTicketGroup(BaseModel):
 class OrderTicketBook:
     def __init__(self):
         self._books: dict[str, OrderTicket] = {}
+        self._instrument_ids: set[Bar] = set()
 
     @property
     def open_order_count(self):
@@ -160,37 +177,92 @@ class OrderTicketBook:
 
     def register_ticket(self, client_order_id: str, order_ticket: OrderTicket):
         self._books[client_order_id] = order_ticket
+        self._instrument_ids.add(order_ticket.instrument_id)
 
-    def update_on_order_submitted(self, client_order_id: ClientOrderId):
+    def update_on_order_submitted(
+        self, client_order_id: ClientOrderId, time: datetime.time
+    ):
         self._books[client_order_id].state = OrderState.SUBMITTED
+        self._books[client_order_id].submitted_at = time
 
-    def update_on_order_accepted(self, client_order_id: ClientOrderId):
+    def update_on_order_accepted(
+        self, client_order_id: ClientOrderId, time: datetime.time
+    ):
         self._books[client_order_id].state = OrderState.ACCEPTED
+        self._books[client_order_id].accepted_at = time
 
-    def update_on_order_rejected(self, client_order_id: ClientOrderId):
+    def update_on_order_rejected(
+        self, client_order_id: ClientOrderId, time: datetime.time
+    ):
         self._books[client_order_id].state = OrderState.REJECTED
+        self._books[client_order_id].rejected_at = time
 
-    def update_on_order_canceled(self, client_order_id: ClientOrderId):
+    def update_on_order_canceled(
+        self, client_order_id: ClientOrderId, time: datetime.time
+    ):
         self._books[client_order_id].state = OrderState.CANCELED
+        self._books[client_order_id].canceled_at = time
 
-    def update_on_order_expired(self, client_order_id: ClientOrderId):
+    def update_on_order_expired(
+        self, client_order_id: ClientOrderId, time: datetime.time
+    ):
         self._books[client_order_id].state = OrderState.EXPIRED
+        self._books[client_order_id].expired_at = time
 
-    def update_on_order_filled(self, client_order_id: ClientOrderId):
+    def update_on_order_filled(
+        self, client_order_id: ClientOrderId, time: datetime.time
+    ):
         self._books[client_order_id].state = OrderState.FILLED
+        self._books[client_order_id].filled_at = time
 
     def update_position_id(
         self, client_order_id: ClientOrderId, position_id: PositionId
     ):
         self._books[client_order_id].position_id = position_id
 
+    def update_filled_price_qty(
+        self, client_order_id: ClientOrderId, qty: Quantity, price: Price
+    ):
+        self._books[client_order_id].filled_price_qty.append(
+            (price.as_decimal(), qty.as_decimal())
+        )
 
-P = TypeVar("P", bound=Provider)
+    def upate_mae_mfe(self, bar: Bar):
+        if not bar.bar_type.instrument_id in self._instrument_ids:
+            return
+        for v in self._books.values():
+            if not v.instrument_id == bar.bar_type.instrument_id:
+                continue
+            if v.position_id is None:
+                continue
+            if v.order_side == OrderSide.BUY:
+                tmp_mae = sum(
+                    [bar.low.as_double() - fpq[0] for fpq in v.filled_price_qty]
+                )
+                tmp_mfe = sum(
+                    [bar.high.as_double() - fpq[0] for fpq in v.filled_price_qty]
+                )
+            elif v.order_side == OrderSide.SELL:
+                tmp_mfe = sum(
+                    [bar.low.as_double() - fpq[0] for fpq in v.filled_price_qty]
+                ) * (-1.0)
+                tmp_mae = sum(
+                    [bar.high.as_double() - fpq[0] for fpq in v.filled_price_qty]
+                ) * (-1.0)
+
+            if tmp_mfe > 0.0 and v.maximum_favorable_excursion is None:
+                v.maximum_favorable_excursion = tmp_mfe
+            elif tmp_mfe > 0.0 and tmp_mfe > v.maximum_favorable_excursion:
+                v.maximum_favorable_excursion = tmp_mfe
+            elif tmp_mae < 0.0 and v.maximum_adverse_excursion is None:
+                v.maximum_adverse_excursion = tmp_mae
+            elif tmp_mae < 0.0 and tmp_mae < v.maximum_adverse_excursion:
+                v.maximum_adverse_excursion = tmp_mae
 
 
-class OrderTicketComposer(ABC, Generic[P]):
-    def __init__(self, provider: P, instrument_id: str):
-        self.provider: P = provider
+class OrderTicketComposer(ABC, Generic[PG]):
+    def __init__(self, provider: PG, instrument_id: str):
+        self.provider: PG = provider
         self.instrument_id = instrument_id
         self._order_ticket_groups: list[OrderTicketGroup] = []
 

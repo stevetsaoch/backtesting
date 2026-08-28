@@ -195,17 +195,20 @@ class ConsolidationAndBreakout(Strategy, DailyResetMixin):
         pass
 
     def on_order_submitted(self, event: OrderSubmitted):
-        self._order_ticket_book.update_on_order_submitted(event.client_order_id)
+        time = self.clock.utc_now().time()
+        self._order_ticket_book.update_on_order_submitted(event.client_order_id, time)
         self._create_and_append_event(
             event_type=EventType.ORDER_SUBMITTED,
             payload={EventPayloadField.INVOLVED: str(event.client_order_id)},
         )
 
     def on_order_accepted(self, event: OrderAccepted) -> None:
-        self._order_ticket_book.update_on_order_accepted(event.client_order_id)
+        time = self.clock.utc_now().time()
+        self._order_ticket_book.update_on_order_accepted(event.client_order_id, time)
 
     def on_order_rejected(self, event: OrderRejected) -> None:
-        self._order_ticket_book.update_on_order_rejected(event.client_order_id)
+        time = self.clock.utc_now().time()
+        self._order_ticket_book.update_on_order_rejected(event.client_order_id, time)
         self._create_and_append_event(
             event_type=EventType.ORDER_REJECTED,
             payload={
@@ -215,7 +218,8 @@ class ConsolidationAndBreakout(Strategy, DailyResetMixin):
         )
 
     def on_order_canceled(self, event: OrderCanceled) -> None:
-        self._order_ticket_book.update_on_order_canceled(event.client_order_id)
+        time = self.clock.utc_now().time()
+        self._order_ticket_book.update_on_order_canceled(event.client_order_id, time)
         self._create_and_append_event(
             event_type=EventType.ORDER_CANCELED,
             payload={
@@ -224,7 +228,8 @@ class ConsolidationAndBreakout(Strategy, DailyResetMixin):
         )
 
     def on_order_expired(self, event: OrderExpired) -> None:
-        self._order_ticket_book.update_on_order_expired(event.client_order_id)
+        time = self.clock.utc_now().time()
+        self._order_ticket_book.update_on_order_expired(event.client_order_id, time)
         self._create_and_append_event(
             event_type=EventType.ORDER_EXPIRED,
             payload={
@@ -233,7 +238,8 @@ class ConsolidationAndBreakout(Strategy, DailyResetMixin):
         )
 
     def on_order_filled(self, event: OrderFilled) -> None:
-        self._order_ticket_book.update_on_order_filled(event.client_order_id)
+        time = self.clock.utc_now().time()
+        self._order_ticket_book.update_on_order_filled(event.client_order_id, time)
         self._order_ticket_book.update_position_id(
             event.client_order_id, event.position_id
         )
@@ -577,9 +583,12 @@ class ConsolidationAndBreakout(Strategy, DailyResetMixin):
             self._build_watch_list()
             self._is_watch_list_built = True
 
-        # select candidate
         for bar in self._current_session_bars:
+            # select candidate
             self._select_candidate(bar)
+            # update mfe and mae
+            self._order_ticket_book.upate_mae_mfe(bar)
+
         self._current_session_bars = []
 
         # ranking candidate
