@@ -52,11 +52,12 @@ r = duckdb.sql(
 ).df()
 
 symbols = r["symbol"].to_list()
-symbols = symbols[0:4]
+# symbols = ["AGNC", "B", "CNO"]
+symbols = ["ANF", "CMC", "CVLT"]
 # IIS/OS window
 engine_start_time = datetime.datetime(2019, 12, 1, 0, 0, 0)
 warmup_data_start_time = engine_start_time + datetime.timedelta(days=-5)
-data_end_time = datetime.datetime(2019, 12, 4, 17, 0, 0)
+data_end_time = datetime.datetime(2019, 12, 5, 17, 0, 0)
 dcfs = []
 
 # preparing bar type
@@ -120,18 +121,21 @@ intraday_open = IndicatorFieldConfig(
     field_name="intraday_open",
     field_type="float",
     depends_on=(),
+    bar_spec_requirement=f"1-{BarAggregation.MINUTE}",
 )
 intraday_high = IndicatorFieldConfig(
     name="intraday_high",
     field_name="intraday_high",
     field_type="float",
     depends_on=(),
+    bar_spec_requirement=f"1-{BarAggregation.MINUTE}",
 )
 intraday_low = IndicatorFieldConfig(
     name="intraday_low",
     field_name="intraday_low",
     field_type="float",
     depends_on=(),
+    bar_spec_requirement=f"1-{BarAggregation.MINUTE}",
 )
 intraday_trading_value = IndicatorFieldConfig(
     name="intraday_trading_value",
@@ -140,18 +144,21 @@ intraday_trading_value = IndicatorFieldConfig(
     operator=Operator.GTE,
     threshold=10_000.0,
     depends_on=(),
+    bar_spec_requirement=f"1-{BarAggregation.MINUTE}",
 )
 intraday_high_updated_at = IndicatorFieldConfig(
     name="intraday_high_updated_at",
     field_name="intraday_high_updated_at",
     field_type="datetime.time",
     depends_on=("intraday_high",),
+    bar_spec_requirement=f"1-{BarAggregation.MINUTE}",
 )
 intraday_low_updated_at = IndicatorFieldConfig(
     name="intraday_low_updated_at",
     field_name="intraday_low_updated_at",
     field_type="datetime.time",
     depends_on=("intraday_low",),
+    bar_spec_requirement=f"1-{BarAggregation.MINUTE}",
 )
 intraday_amplitude = IndicatorFieldConfig(
     name="intraday_amplitude",
@@ -164,6 +171,7 @@ intraday_amplitude = IndicatorFieldConfig(
         "intraday_low",
         "intraday_open",
     ),
+    bar_spec_requirement=f"1-{BarAggregation.MINUTE}",
 )
 intraday_atr = IndicatorFieldConfig(
     name="intraday_atr",
@@ -173,11 +181,11 @@ intraday_atr = IndicatorFieldConfig(
     threshold=10.0,
     depends_on=(),
     params={"bar_buffer_size": 14},
+    bar_spec_requirement=f"1-{BarAggregation.MINUTE}",
 )
 intraday_1_min = IndicatorMeta(
     name="intraday_1_min",
     indicator_name="intraday_short_period",
-    bar_spec_requirements=[f"1-{BarAggregation.MINUTE}"],
     field_configs=[
         intraday_open,
         intraday_low,
@@ -198,6 +206,7 @@ clv_factor = FactorConfig(
     ascending=True,
     provider="factor_provider",
     bar_buffer_size=2,
+    bar_spec_requirement=f"1-{BarAggregation.MINUTE}",
     ranking_config=RankingConfigs(
         percentile=PercentileRankingConfig(
             tie_breaking_method=TieBreakingMethod.MINIMUM, ascending=True
@@ -211,6 +220,7 @@ two_bar_higher_close = FactorConfig(
     threshold=0.0,
     ascending=False,
     bar_buffer_size=2,
+    bar_spec_requirement=f"1-{BarAggregation.MINUTE}",
     provider="factor_provider",
     ranking_config=RankingConfigs(
         percentile=PercentileRankingConfig(
@@ -224,43 +234,73 @@ orb_entry_signal = SignalMeta(
     name="orb_entry_signal",
     factor_configs=[clv_factor, two_bar_higher_close],
     internal_aggregation_method=AggregationMethod.MINIMUM,
+    is_entry_signal=True,
+    is_exit_signal=False,
 )
 # other
 consolidation_end: datetime.time = datetime.time(10, 30, 0)
 
+# fee model info, not include in config
+fee_per_share = 0.005
+minimum_fee_per_order = 1.0
+maximum_fee_ratio_per_order = 0.01
+target_price_minimum = 10.0
+
+
 # trading rule
-balance = VENUE_CONFIG.starting_balances
-position_value_ratio = 0.8
-position_value_maximum = balance * position_value_ratio
-position_maximum = 2.0
-order_maximum = 2.0
-order_value_maximum = position_value_maximum / order_maximum
-risk_ratio = 0.02
-maximum_lose_per_day = balance * risk_ratio
+# position
+open_position_maximum = 2.0
+# order
 trading_bar_type = f"1-MINUTE-LAST"
 stop_price_buffer = 0.02
-risk_ratio = 0.02
+order_value_maximum = 800.0
+order_size_multiplier_ratio = 0.5
+order_size_multiplier_trigger_loss_ratio = 0.5
+# risk
+balance = VENUE_CONFIG.starting_balances
+tradable_balance_ratio = 0.8
+tradable_balance = balance * tradable_balance_ratio
+intraday_risk_ratio = 0.02
+intraday_loss_maximum = balance * intraday_risk_ratio
+cost_ratio_maximum = 0.05
+cost_estimated_per_trade = (
+    minimum_fee_per_order
+    if (order_value_maximum / target_price_minimum) * fee_per_share
+    < maximum_fee_ratio_per_order * order_value_maximum
+    else maximum_fee_ratio_per_order * order_value_maximum
+) * 2.0
+cost_efficiency_value_minimum = cost_estimated_per_trade / cost_ratio_maximum
+risk_value_ratio_minimum = 0.005
+risk_value_minimum = balance * risk_value_ratio_minimum
+# session
 market_open_at = datetime.time(9, 30, 0)
 market_close_at = datetime.time(16, 0, 0)
 trading_start_at = datetime.time(10, 30, 0)
 forced_close_at = datetime.time(15, 30, 0)
-
 # rules
 order_rule: OrderRules = OrderRules(
     trading_bar_type=trading_bar_type,
-    order_total_count_maximum=order_maximum,
+    stop_price_buffer=stop_price_buffer,
     order_value_maximum=order_value_maximum,
+    order_size_multiplier_trigger_loss_ratio=order_size_multiplier_trigger_loss_ratio,
+    order_size_multiplier_trigger_minimum=intraday_loss_maximum
+    * order_size_multiplier_trigger_loss_ratio,  # order_size_multiplier_trigger_loss_ratio * intraday_loss_limit, update frequence: daily
+    order_size_multiplier_ratio=order_size_multiplier_ratio,
 )
 position_rule: PositionRules = PositionRules(
-    position_value_ratio=position_value_ratio,
-    position_value_maximum=position_value_maximum,
-    position_total_count_maximum=position_maximum,
+    open_position_maximum=open_position_maximum,
 )
 risk_rule: RiskRules = RiskRules(
     balance=balance,
-    stop_price_buffer=stop_price_buffer,
-    maximum_lose_per_day=maximum_lose_per_day,
-    risk_ratio=risk_ratio,
+    tradable_balance_ratio=tradable_balance_ratio,
+    tradable_balance=tradable_balance,
+    intraday_risk_ratio=intraday_risk_ratio,
+    intraday_loss_maximum=intraday_loss_maximum,
+    cost_ratio_maximum=cost_ratio_maximum,
+    cost_estimated_per_trade=cost_estimated_per_trade,
+    cost_efficiency_value_minimum=cost_efficiency_value_minimum,
+    risk_value_ratio_minimum=risk_value_ratio_minimum,
+    risk_value_minimum=risk_value_minimum,
 )
 session_rule: SessionRule = SessionRule(
     market_open_at=market_open_at,
@@ -269,7 +309,7 @@ session_rule: SessionRule = SessionRule(
     forced_close_at=forced_close_at,
 )
 # order
-order_validator = "orb_order_validator"
+order_validator = "orb_long_order_validator"
 order_composer = "orb_order_composer"
 order_type = "bracket"
 # session
@@ -313,7 +353,7 @@ s = ImportableStrategyConfig(
         "signal_meta_set": [orb_entry_signal],
         "signal_aggregation_method": signal_aggregation_method,
         # hard code
-        "venue_currency_pair": {"SIM": "USD"},
+        "venue_currency_pair": {"venue": "SIM", "currency": "USD"},
         "msg_enpoint": "consolidation.strategy",
         "msg_outbound_endpoint": "consolidation.actor",
     },
@@ -334,6 +374,7 @@ btrc = BacktestRunConfig(
     ),
     data=dcfs,
     venues=[backtest_venue_config],
+    dispose_on_completion=False,
 )
 
 

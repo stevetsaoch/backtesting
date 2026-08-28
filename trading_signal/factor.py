@@ -16,6 +16,7 @@ class FactorConfig:
     name: str
     operator: Operator
     threshold: float
+    bar_spec_requirement: str
     # for ranking,
     ascending: bool
     provider: str
@@ -31,6 +32,7 @@ class Factor(ABC):
         operator: Operator,
         threshold: float,
         bar_buffer_size: int,
+        bar_spec_requirement: str,
         provider: ActorInfoProvider | None = None,
     ):
         self.name = name
@@ -39,6 +41,7 @@ class Factor(ABC):
         self.operator = operator
         self.threshold = threshold
         self.bar_buffer_size = bar_buffer_size
+        self.bar_spec_requirement = bar_spec_requirement
 
     @abstractmethod
     def update(self, *args, **kwargs): ...
@@ -50,6 +53,9 @@ class Factor(ABC):
     @property
     @abstractmethod
     def value(self) -> float | int: ...
+
+    @abstractmethod
+    def _check_bar_spec(self, bar: Bar) -> bool: ...
 
 
 class CLVFactor(Factor):
@@ -75,6 +81,9 @@ class CLVFactor(Factor):
         return self.clv
 
     def update(self, bar: Bar):
+        if not self._check_bar_spec(bar):
+            return
+
         self.bars.append(bar)
         if len(self.bars) == 2:
             high = self.bars[0].high.as_double()
@@ -91,6 +100,15 @@ class CLVFactor(Factor):
 
             else:
                 self.stage = 0
+
+    def _check_bar_spec(self, bar: Bar) -> bool:
+        if (
+            f"{bar.bar_type.spec.step}-{bar.bar_type.spec.aggregation}"
+            != self.bar_spec_requirement
+        ):
+            return False
+        else:
+            return True
 
 
 class TwoBarHigherCloseFactor(Factor):
@@ -116,6 +134,9 @@ class TwoBarHigherCloseFactor(Factor):
         return self.spread
 
     def update(self, bar: Bar):
+        if not self._check_bar_spec(bar):
+            return
+
         self.bars.append(bar)
         if len(self.bars) == 2:
             v = self.bars[1].close.as_double() - self.bars[0].close.as_double()
@@ -126,6 +147,15 @@ class TwoBarHigherCloseFactor(Factor):
 
             else:
                 self.stage = 0
+
+    def _check_bar_spec(self, bar: Bar) -> bool:
+        if (
+            f"{bar.bar_type.spec.step}-{bar.bar_type.spec.aggregation}"
+            != self.bar_spec_requirement
+        ):
+            return False
+        else:
+            return True
 
 
 FACTOR_REGISTRY: dict[str, type] = {

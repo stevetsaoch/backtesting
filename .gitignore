@@ -23,3 +23,6 @@ sources/
 
 # other
 .DS_Store
+
+# gui
+gui/

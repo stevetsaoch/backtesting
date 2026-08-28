@@ -79,10 +79,12 @@ class ConsolidationAndBreakoutIndicatorManageActor(Actor, DailyResetMixin):
             indi = INDICATOR_REGISTRY.get(indm.indicator_name)
             if indi is None:
                 raise Exception("Not valid indicator")
-
+            bar_spec_requirement_from_fields = set(
+                [bs.bar_spec_requirement for bs in indm.field_configs]
+            )
             for iid, bts in self.config.bar_types.items():
                 bts_spec = [f"{b.spec.step}-{b.spec.aggregation}" for b in bts]
-                if set(bts_spec) in set(indm.bar_spec_requirements):
+                if set(bts_spec) in bar_spec_requirement_from_fields:
                     raise Exception(
                         "Bar type requirement not match, please add correct bar type"
                     )
@@ -91,7 +93,7 @@ class ConsolidationAndBreakoutIndicatorManageActor(Actor, DailyResetMixin):
                 for bt in bts:
                     if (
                         f"{bt.spec.step}-{bt.spec.aggregation}"
-                        in indm.bar_spec_requirements
+                        in bar_spec_requirement_from_fields
                     ):
                         t_bts.append(bt)
                 t_ind = indi(

@@ -1,13 +1,19 @@
 import datetime
-from typing import Protocol
+from typing import Protocol, TypeVar
 from nautilus_trader.model import Bar
+from nautilus_trader.model.enums import OrderSide, PositionSide
+from nautilus_trader.model.position import Position
 from nautilus_trader.model.orders import Order
 from nautilus_trader.model.instruments import Instrument
+
 from schemas import TradingRulesMutable
 
 
 class Provider(Protocol):
     pass
+
+
+PG = TypeVar("PG", bound=Provider)
 
 
 class ActorInfoProvider(Provider):
@@ -20,6 +26,13 @@ class ActorInfoProvider(Provider):
     def get_instrument(self, instrument_id: str) -> Instrument: ...
     def get_current_datetime(self) -> datetime.datetime: ...
     def get_positions(self) -> dict: ...
+    def get_open_positions(
+        self, side: PositionSide, instrument_id: str
+    ) -> list[Position]: ...
+    def get_open_orders(self, side: OrderSide, instrument_id: str) -> list[Order]: ...
+    def get_unrealized_profit_and_loss(self) -> float: ...
+    def get_realized_profit_and_loss(self) -> float: ...
+    def get_depolyed_balance(self, instrument_id: str) -> float: ...
 
 
 PROVIDER_REGISTRY = {"actor_info_provider": ActorInfoProvider}

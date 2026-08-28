@@ -1,10 +1,10 @@
-from typing import Any
+from typing import Any, Generic
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
 from nautilus_trader.model import Bar
 
-from protocols.provider import Provider
+from protocols.provider import Provider, PG
 from trading_signal.factor import FactorConfig, FACTOR_REGISTRY
 from schemas import AggregationMethod
 
@@ -14,6 +14,8 @@ class SignalMeta:
     name: str
     factor_configs: list[FactorConfig]
     internal_aggregation_method: AggregationMethod
+    is_entry_signal: bool
+    is_exit_signal: bool
 
 
 def build_factor(
@@ -31,18 +33,21 @@ def build_factor(
             operator=c.operator,
             threshold=c.threshold,
             bar_buffer_size=c.bar_buffer_size,
+            bar_spec_requirement=c.bar_spec_requirement,
         )
         factors.append(f)
     return factors
 
 
-class BaseSignal(ABC):
+class BaseSignal(ABC, Generic[PG]):
     def __init__(
         self,
         name: str,
         instrument_id: str,
         factor_configs: list[FactorConfig],
-        provider: Provider,
+        provider: PG,
+        is_entry_signal: bool,
+        is_exit_signal: bool,
     ):
         self.name = name
         self.factor_configs = factor_configs
@@ -52,6 +57,8 @@ class BaseSignal(ABC):
             factor_configs=factor_configs,
             provider=provider,
         )
+        self.is_entry_signal = is_entry_signal
+        self.is_exit_signal = is_exit_signal
 
     @abstractmethod
     def update(self, *args, **kwargs): ...
@@ -70,8 +77,8 @@ class ORBEntrySignal(BaseSignal):
         super().__init__(*args, **kwargs)
 
     def update(self, bar: Bar):
-        for s in self.factors:
-            s.update(bar)
+        for f in self.factors:
+            f.update(bar)
 
     @property
     def signal(self):

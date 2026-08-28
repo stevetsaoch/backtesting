@@ -19,11 +19,11 @@ class IbkrTieredFeeModel(FeeModel):
     ):
         fee: float = 0.0
         trade_value = float(quantity) * float(price)
-        init_fee = float(quantity) * 0.035
+        init_fee = float(quantity) * 0.005
         if init_fee >= trade_value * 0.01:
             fee = trade_value * 0.01
-        elif init_fee <= 0.35:
-            fee = 0.35
+        elif init_fee <= 1.0:
+            fee = 1.0
         else:
             fee = init_fee
 

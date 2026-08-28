@@ -490,6 +490,8 @@ class EventType(str, enum.Enum):
     #
     PRE_ORDER_VALIDATION = "pre_order_validation"
     #
+    POST_ORDER_VALIDATION = "post_order_validation"
+    #
     ORDER_TICKET_CREATED = "order_ticket_created"
     #
     ORDER_CREATED = "order_created"
@@ -658,23 +660,40 @@ class AccountConfig:
 @dataclass(frozen=True)
 class OrderRules:
     trading_bar_type: str
-    order_total_count_maximum: float
-    order_value_maximum: float
+    stop_price_buffer: float
+    order_value_maximum: (
+        float  # tradable_balance / open_position_maximum, update frequence: daily
+    )
+    # down sizing
+    order_size_multiplier_trigger_loss_ratio: float
+    order_size_multiplier_trigger_minimum: float  # order_size_multiplier_trigger_loss_ratio * intraday_loss_limit, update frequence: daily
+    order_size_multiplier_ratio: float  # change order size when intraday loss / intraday_loss_limit > trigger_loss_ratio
 
 
 @dataclass(frozen=True)
 class PositionRules:
-    position_value_ratio: float
-    position_value_maximum: float
-    position_total_count_maximum: float
+    open_position_maximum: float
 
 
 @dataclass(frozen=True)
 class RiskRules:
+    # balance
     balance: float
-    risk_ratio: float
-    stop_price_buffer: float
-    maximum_lose_per_day: float
+    tradable_balance_ratio: float
+    tradable_balance: float  # balance * tradabel_balance_raito, update frequence: daily
+    # loss
+    intraday_risk_ratio: float
+    intraday_loss_maximum: (
+        float  # balance * intraday_risk_ratio, update frequence: daily
+    )
+    # opportunity cost, actual risk value > max(cost_efficiency_minimum, risk_value_minimum)
+    cost_ratio_maximum: float
+    cost_estimated_per_trade: float
+    cost_efficiency_value_minimum: (
+        float  # cost estimated / cost ratio, prevent cost drag
+    )
+    risk_value_ratio_minimum: float
+    risk_value_minimum: float  # risk_value_ratio * balance, update frequence: daily
 
 
 @dataclass(frozen=True)
@@ -687,21 +706,38 @@ class SessionRule:
 
 class OrderRulesMutable(BaseModel):
     trading_bar_type: str
-    order_total_count_maximum: float
-    order_value_maximum: float
+    stop_price_buffer: float
+    order_value_maximum: (
+        float  # tradable_balance / open_position_maximum, update frequence: daily
+    )
+    # down sizing
+    order_size_multiplier_trigger_loss_ratio: float
+    order_size_multiplier_trigger_minimum: float  # order_size_multiplier_trigger_loss_ratio * intraday_loss_limit, update frequence: daily
+    order_size_multiplier_ratio: float  # change order size when intraday loss / intraday_loss_limit > trigger_loss_ratio
 
 
 class PositionRulesMutable(BaseModel):
-    position_value_ratio: float
-    position_value_maximum: float
-    position_total_count_maximum: float
+    open_position_maximum: float
 
 
 class RiskRulesMutable(BaseModel):
+    # balance
     balance: float
-    risk_ratio: float
-    stop_price_buffer: float
-    maximum_lose_per_day: float
+    tradable_balance_ratio: float
+    tradable_balance: float  # balance * tradabel_balance_raito, update frequence: daily
+    # loss
+    intraday_risk_ratio: float
+    intraday_loss_maximum: (
+        float  # balance * intraday_risk_ratio, update frequence: daily
+    )
+    # opportunity cost, actual risk value > max(cost_efficiency_minimum, risk_value_minimum)
+    cost_ratio_maximum: float
+    cost_estimated_per_trade: float
+    cost_efficiency_value_minimum: (
+        float  # cost estimated / cost ratio, prevent cost drag
+    )
+    risk_value_ratio_minimum: float
+    risk_value_minimum: float  # risk_value_ratio * balance, update frequence: daily
 
 
 class SessionRuleMutable(BaseModel):
