@@ -219,6 +219,7 @@ class ConsolidationAndBreakout(Strategy, DailyResetMixin):
         self._order_ticket_book.update_on_order_rejected(
             event.client_order_id, datetime
         )
+
         self._create_and_append_event(
             event_type=EventType.ORDER_REJECTED,
             payload={

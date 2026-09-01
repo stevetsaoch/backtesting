@@ -4,6 +4,7 @@ from typing import Generic
 from decimal import Decimal
 from abc import ABC, abstractmethod
 from collections import defaultdict
+from decimal import Decimal
 from pydantic import BaseModel, model_serializer, ConfigDict, Field
 from pydantic_core.core_schema import SerializationInfo
 
@@ -13,6 +14,7 @@ from nautilus_trader.model.enums import OrderSide, OrderType, TimeInForce
 from nautilus_trader.model.objects import Price, Quantity, Money
 
 from protocols.provider import ActorInfoProvider, PG
+
 from schemas import TradingRulesMutable
 
 
