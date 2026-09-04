@@ -33,13 +33,11 @@ from message import WatchListRequest, WatchListResponse
 from indicator.indicator import IndicatorMeta
 from trading_signal.signal import (
     SignalMeta,
+    SIGNAL_REGISTRY,
     SignalManager,
     SIGNAL_MANAGER_REGISTRY,
 )
-from trading_signal.ranking import CandidateRankingMethod
-from candidate import CANDIDATE_MANAGER_REGISTRY
-
-from trading_signal.ranking import PercentilRanking, RANKING_METHOD_REGISTRY
+from trading_signal.ranking import PercentilRanking
 from order.order_validator import ORDER_VALIDATOR_REGISTRY
 from order.order import (
     OrderTicket,
@@ -56,6 +54,8 @@ from schemas import (
     EventType,
     EventPayloadField,
     Event,
+    CandidateAction,
+    CandidateActionReason,
     PreOrderValidationAction,
     PreOrderValidationReason,
     AggregationMethod,
@@ -85,9 +85,6 @@ class ConsolidationAndBreakoutConfig(StrategyConfig, frozen=True):
     signal_meta_set: list[SignalMeta]
     signal_aggregation_method: AggregationMethod
     signal_manager: str
-    # candidate
-    candidate_manager: str
-    ranking_method: str
     # trading rule
     order_rule: OrderRules
     position_rule: PositionRules
@@ -119,25 +116,14 @@ class ConsolidationAndBreakout(Strategy, DailyResetMixin):
         self._current_session_date: datetime.date | None = None
         self._current_session_datetime: datetime.datetime | None = None
         self._current_session_bars: list[Bar] = []
-        # watchlist
-        self._watch_list: list[InstrumentId] | None = None
         # signal
-        self._signal_manager: SignalManager = SIGNAL_MANAGER_REGISTRY[
-            self.config.signal_manager
-        ](self.config.signal_meta_set)
-        # candidate
-        self._candidate_ranking_method: (
-            CandidateRankingMethod
-        ) = RANKING_METHOD_REGISTRY[self.config.ranking_method](
-            signal_aggregation_method=self.config.signal_aggregation_method,
-            signal_meta_set=self.config.signal_meta_set,
+        self._signal_manager = SIGNAL_MANAGER_REGISTRY[self.config.signal_manager](
+            self.config.signal_meta_set
         )
-        self._candidate_manager = CANDIDATE_MANAGER_REGISTRY[
-            self.config.candidate_manager
-        ](
-            signal_manager=self._signal_manager,
-            candidate_ranking_method=self._candidate_ranking_method,
-        )
+        # screening, ranking and candidate
+        self._watch_list: list[InstrumentId] | None = None
+        self._candidate: set[str] = set()
+        self._candidate_ranking_metric = None
         # event
         self._events: list[Event] = []
         self._event_dir = Path(
@@ -318,19 +304,145 @@ class ConsolidationAndBreakout(Strategy, DailyResetMixin):
         # make event dir
         self._event_dir.mkdir(parents=True, exist_ok=True)
 
+    def _build_signal(self, instrument_id: str):
+        sl = []
+        for signal_config in self.config.signal_meta_set:
+            s = SIGNAL_REGISTRY.get(signal_config.name)
+            sl.append(
+                s(
+                    name=signal_config.name,
+                    instrument_id=instrument_id,
+                    factor_configs=signal_config.factor_configs,
+                    is_entry_signal=signal_config.is_entry_signal,
+                    is_exit_signal=signal_config.is_exit_signal,
+                )
+            )
+
+        return sl
+
+    # candidate
+    def _select_candidate(self, bar):
+        instrument_id = bar.bar_type.instrument_id
+        if self._watch_list is None:
+            return
+
+        for iid in self._watch_list:
+            if instrument_id != iid:
+                continue
+
+            metrics = {}
+            for s in v:
+                s.update(bar)  # signal update
+                metrics[s.name] = {}
+                sm = {}
+                for f in s.factors:
+                    sm[f.name] = f.value
+                metrics[s.name] = metrics[s.name] | sm
+            signal = all([s.signal for s in v])
+            if instrument_id_string in self._candidate:
+                if signal:
+                    continue
+                elif not signal:
+                    self._candidate.remove(k)
+                    self._create_and_append_event(
+                        event_type=EventType.SELECT_CANDIDATE,
+                        payload={
+                            EventPayloadField.ACTION: CandidateAction.REMOVE,
+                            EventPayloadField.INVOLVED: k,
+                            EventPayloadField.REASON: CandidateActionReason.SIGNAL_INVALIDATED,
+                            EventPayloadField.METRICS: metrics,
+                        },
+                    )
+
+            elif not instrument_id_string in self._candidate:
+                if signal:
+                    self._candidate.add(k)
+                    self._create_and_append_event(
+                        event_type=EventType.SELECT_CANDIDATE,
+                        payload={
+                            EventPayloadField.ACTION: CandidateAction.ADD,
+                            EventPayloadField.INVOLVED: k,
+                            EventPayloadField.METRICS: metrics,
+                        },
+                    )
+                elif not signal:
+                    self._create_and_append_event(
+                        event_type=EventType.SELECT_CANDIDATE,
+                        payload={
+                            EventPayloadField.ACTION: CandidateAction.SKIP,
+                            EventPayloadField.INVOLVED: k,
+                            EventPayloadField.REASON: CandidateActionReason.SIGNAL_INVALIDATED,
+                            EventPayloadField.METRICS: metrics,
+                        },
+                    )
+
+    @lru_cache(maxsize=1)
+    def _factor_ranking_dict(self):
+        frd = defaultdict()
+        for sm in self.config.signal_meta_set:
+            for fcfg in sm.factor_configs:
+                frd[fcfg.name] = fcfg.ranking_config.to_dict()
+        return frd
+
+    def _percentil_ranking(self, df: pd.DataFrame):
+        factor = df.name[1]
+        direction = self._factor_ranking_dict()[factor]["percentile"]["ascending"]
+        method = self._factor_ranking_dict()[factor]["percentile"][
+            "tie_breaking_method"
+        ]
+        return df["factor_value"].rank(pct=True, method=method, ascending=direction)
+
+    @lru_cache(maxsize=1)
+    def _signal_internal_aggregation_dict(self):
+        sd = defaultdict()
+        for s in self.config.signal_meta_set:
+            sd[s.name] = s.internal_aggregation_method
+        return sd
+
     def _ranking_candidate(self):
+        records: list = []
+        candidate_count = 0
+
+        for can in self._candidate:
+            candidate_count += 1
+            sigs = self._watch_list.get(can)
+            for s in sigs:
+                if not s.is_entry_signal:
+                    continue
+                for f in s.factors:
+                    record = CandidateFlat(
+                        instrument_id=can,
+                        signal=s.name,
+                        factor=f.name,
+                        factor_value=f.value,
+                    )
+                    records.append(record)
+
+        df = pd.DataFrame([r.model_dump() for r in records])
+        if df.empty:
+            return
         ranking_metric = PercentilRanking(
+            df=df,
+            factor_ranking_dict=self._factor_ranking_dict(),
+            internal_aggregation_dict=self._signal_internal_aggregation_dict(),
             between_aggregation_method=self.config.signal_aggregation_method,
         ).rank()
+        self._create_and_append_event(
+            event_type=EventType.RANKING_CANDIDATE,
+            payload={
+                EventPayloadField.METRICS: ranking_metric.model_dump(),
+            },
+        )
+        self._candidate_ranking_metric = ranking_metric
 
     def _post_on_bar(self, event):
         self._request_watchlist()
         if self._watch_list is None:
             return
-        self._signal_manager.register(self._watch_list)
-        self._signal_manager.update_signals(self._current_session_bars)
 
         for bar in self._current_session_bars:
+            # select candidate
+            self._select_candidate(bar)
             # update mfe and mae
             self._order_ticket_book.upate_mae_mfe(bar)
 

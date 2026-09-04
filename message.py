@@ -1,6 +1,7 @@
 import pandas as pd
-from pydantic import BaseModel
 from dataclasses import dataclass
+
+from nautilus_trader.model import InstrumentId
 
 
 @dataclass
@@ -27,3 +28,14 @@ class IntradayDataFrameRequest(Request):
 class IntradayDataFrameResponse(Response):
     data: pd.DataFrame
     snapshot: bool
+
+
+@dataclass
+class WatchListRequest(Request):
+    pass
+
+
+@dataclass
+class WatchListResponse(Response):
+    is_ready: bool
+    payload: list[InstrumentId]

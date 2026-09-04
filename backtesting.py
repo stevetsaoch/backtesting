@@ -53,7 +53,7 @@ r = duckdb.sql(
 
 symbols = r["symbol"].to_list()
 # symbols = ["AGNC", "B", "CNO"]
-symbols = ["ANF", "CMC", "CVLT"]
+symbols = ["ANF", "CMC"]
 # IIS/OS window
 engine_start_time = datetime.datetime(2019, 12, 1, 0, 0, 0)
 warmup_data_start_time = engine_start_time + datetime.timedelta(days=-5)
@@ -204,7 +204,6 @@ clv_factor = FactorConfig(
     operator=Operator.GTE,
     threshold=0.7,
     ascending=True,
-    provider="factor_provider",
     bar_buffer_size=2,
     bar_spec_requirement=f"1-{BarAggregation.MINUTE}",
     ranking_config=RankingConfigs(
@@ -221,7 +220,6 @@ two_bar_higher_close = FactorConfig(
     ascending=False,
     bar_buffer_size=2,
     bar_spec_requirement=f"1-{BarAggregation.MINUTE}",
-    provider="factor_provider",
     ranking_config=RankingConfigs(
         percentile=PercentileRankingConfig(
             tie_breaking_method=TieBreakingMethod.MINIMUM, ascending=True
@@ -229,6 +227,9 @@ two_bar_higher_close = FactorConfig(
         zscore=ZScoreRankingConfig(ascending=True),
     ),
 )
+ranking_method = "percentile"
+
+signal_aggregation_method = AggregationMethod.MINIMUM
 
 orb_entry_signal = SignalMeta(
     name="orb_entry_signal",
@@ -238,7 +239,8 @@ orb_entry_signal = SignalMeta(
     is_exit_signal=False,
 )
 # other
-consolidation_end: datetime.time = datetime.time(10, 30, 0)
+snapshot_time: datetime.time = datetime.time(10, 30, 0)
+signal_manager = "orb_entry_signal"
 
 # fee model info, not include in config
 fee_per_share = 0.005
@@ -312,9 +314,9 @@ session_rule: SessionRule = SessionRule(
 order_validator = "orb_long_order_validator"
 order_composer = "orb_order_composer"
 order_type = "bracket"
+candidate_manager = "orb_candidate_manager"
 # session
 name = "test_backtesting"
-signal_aggregation_method = AggregationMethod.MINIMUM
 order_config_factory = "orb_long_bracket_order_config_factory"
 order_type = "bracket"
 a = ImportableActorConfig(
@@ -326,9 +328,10 @@ a = ImportableActorConfig(
         "data_start_datetime": engine_start_time,
         "bar_types": bar_types,
         "indicator_meta_set": [intraday_1_min],
-        "consolidation_end": consolidation_end,
+        "snapshot_time": snapshot_time,
         "msg_enpoint": "consolidation.actor",
         "msg_outbound_endpoint": "consolidation.strategy",
+        "watchlist_manager": "orb_watchlist_manager",
     },
 )
 
@@ -341,7 +344,7 @@ s = ImportableStrategyConfig(
         "data_start_datetime": engine_start_time,
         "bar_types": bar_types,
         "indicator_meta_set": [intraday_1_min],
-        "consolidation_end": consolidation_end,
+        "snapshot_time": snapshot_time,
         "order_rule": order_rule,
         "position_rule": position_rule,
         "risk_rule": risk_rule,
@@ -352,10 +355,13 @@ s = ImportableStrategyConfig(
         "order_composer": order_composer,
         "signal_meta_set": [orb_entry_signal],
         "signal_aggregation_method": signal_aggregation_method,
+        "signal_manager": signal_manager,
         # hard code
         "venue_currency_pair": {"venue": "SIM", "currency": "USD"},
         "msg_enpoint": "consolidation.strategy",
         "msg_outbound_endpoint": "consolidation.actor",
+        "candidate_manager": "orb_candidate_manager",
+        "ranking_method": 
     },
 )
 
@@ -364,7 +370,7 @@ btrc = BacktestRunConfig(
     engine=BacktestEngineConfig(
         trader_id="test-trader",  # hard code
         actors=[a],
-        strategies=[s],
+        # strategies=[a],
         logging=LoggingConfig(log_level="INFO"),
         data_engine=DataEngineConfig(
             time_bars_timestamp_on_close=True,

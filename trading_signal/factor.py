@@ -19,7 +19,6 @@ class FactorConfig:
     bar_spec_requirement: str
     # for ranking,
     ascending: bool
-    provider: str
     ranking_config: RankingConfigs
     bar_buffer_size: int
 
@@ -28,16 +27,12 @@ class Factor(ABC):
     def __init__(
         self,
         name: str,
-        instrument_id: str,
         operator: Operator,
         threshold: float,
         bar_buffer_size: int,
         bar_spec_requirement: str,
-        provider: ActorInfoProvider | None = None,
     ):
         self.name = name
-        self.instrument_id = instrument_id
-        self.provider = provider
         self.operator = operator
         self.threshold = threshold
         self.bar_buffer_size = bar_buffer_size

@@ -1,18 +1,14 @@
-import copy
-import datetime
 from abc import abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from graphlib import TopologicalSorter, CycleError
 from nautilus_trader.indicators.base import Indicator
 from nautilus_trader.model.data import BarType, Bar
-from nautilus_trader.core.datetime import unix_nanos_to_dt
 from indicator.field import IndicatorFieldConfig, IndicatorField, FIELD_REGISTRY
 
 
 @dataclass(frozen=True)
 class NativeIndicatorMeta:
     indicator_name: str
-    snapshot_time: datetime.time | None = field(default=None)
 
 
 @dataclass(frozen=True)
@@ -24,8 +20,6 @@ class IndicatorMeta:
     name: str
     indicator_name: str
     field_configs: list[IndicatorFieldConfig]
-    # normally all indicator will be same.....
-    snapshot_time: datetime.time | None = field(default=None)
 
 
 def build_fields(configs: list[IndicatorFieldConfig]) -> dict[str, IndicatorField]:
@@ -49,66 +43,49 @@ def build_fields(configs: list[IndicatorFieldConfig]) -> dict[str, IndicatorFiel
     return fields
 
 
-class BaseIndicator(Indicator):
+class CustomIndicator(Indicator):
     def __init__(
         self,
         bar_types: list[BarType],
         field_configs: list[IndicatorFieldConfig],
-        snapshot_time: datetime.time | None = None,
     ):
         super().__init__(
             params=[
                 "_".join(
                     [str(b) for b in bar_types],
                 ),
-                snapshot_time.isoformat() if snapshot_time is not None else None,
             ]
         )
-        self.snapshot_time = snapshot_time
         self.fields = build_fields(configs=field_configs)
 
     @abstractmethod
-    def get(self, snapshot: bool) -> dict: ...
+    def get(self) -> dict: ...
 
 
-class IntradayShortPeriodIndicator(BaseIndicator):
+class IntradayShortPeriodIndicator(CustomIndicator):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.default_data = {n: f.value for n, f in self.fields.items()}
-        self.snapshot_data = self.default_data
-        self.latest_data = self.default_data
-        self.is_snapshot = False
+        self._default_data = {n: f.value for n, f in self.fields.items()}
+        self._data = self._default_data
 
     def handle_bar(self, bar: Bar):
         for field in self.fields.values():
             field.update(bar)
-        self._update_latest_date()
-        self._update_snapshot(bar)
+        self._update_data()
 
-    def get(self, snapshot: bool = False) -> dict:
-        if snapshot:
-            return self.snapshot_data
-        else:
-            return self.latest_data
+    def get(self) -> dict:
+        return self._data
 
-    def _update_latest_date(self):
+    def _update_data(self):
         data = {}
         for n, f in self.fields.items():
             data[n] = f.value
-        self.latest_data = {n: f.value for n, f in self.fields.items()}
-
-    def _update_snapshot(self, bar):
-        bar_time = unix_nanos_to_dt(bar.ts_event).time()
-        if bar_time >= self.snapshot_time and self.is_snapshot == False:
-            self.snapshot_data = copy.deepcopy(self.latest_data)
-            self.is_snapshot = True
+        self._data = {n: f.value for n, f in self.fields.items()}
 
     def _reset(self):
         for field in self.fields.values():
             field.reset()
-        self.snapshot_data = self.default_data
-        self.latest_data = self.default_data
-        self.is_snapshot = False
+        self._data = self._default_data
 
 
 INDICATOR_REGISTRY = {
