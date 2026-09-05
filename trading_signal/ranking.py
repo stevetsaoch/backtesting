@@ -4,7 +4,7 @@ from typing import TypeVar
 from collections import defaultdict
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from nautilus_trader.model import InstrumentId
 
@@ -26,6 +26,7 @@ class FieldNameMeta(type(BaseModel)):
 
 
 class SignalResultFlat(BaseModel, metaclass=FieldNameMeta):
+    model_config = ConfigDict(arbitrary_types_allowed=True)
     instrument_id: InstrumentId
     signal: str
     factor: str
@@ -58,16 +59,16 @@ class ZScoreRankingMethodConfig:
 
 
 class RankingMetric(BaseModel):
-    ranked: dict | None = None
-    signal_scores: dict | None = None
-    final_scores: dict | None = None
+    ranked: dict = defaultdict()
+    signal_scores: dict = defaultdict()
+    final_scores: dict = defaultdict()
 
 
 class CandidateRankingMethod(ABC):
-    COL_INSTRUMENT = CandidateFlat.instrument_id
-    COL_SIGNAL = CandidateFlat.signal
-    COL_FACTOR = CandidateFlat.factor
-    COL_FACTOR_VALUE = CandidateFlat.factor_value
+    COL_INSTRUMENT = SignalResultFlat.instrument_id
+    COL_SIGNAL = SignalResultFlat.signal
+    COL_FACTOR = SignalResultFlat.factor
+    COL_FACTOR_VALUE = SignalResultFlat.factor_value
     COL_FACTOR_RANKING = "factor_ranking"
     COL_SIGNAL_SCORE = "signal_scores"
     COL_SCREENING_RESULT = "screening_result"
@@ -113,27 +114,27 @@ CANDIDATE_RANKING_METHOD = TypeVar(
 class PercentilRanking(CandidateRankingMethod):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.ranking_metric = RankingMetric()
+        self._ranking_metric = RankingMetric()
 
     def rank(self, df: pd.DataFrame) -> RankingMetric:
         df[self.COL_FACTOR_RANKING] = df.groupby(
             [self.COL_SIGNAL, self.COL_FACTOR], group_keys=False
         ).apply(self._percentile_ranking)
-        self.ranking_metric.ranked = df.to_dict()
+        self._ranking_metric.ranked = df.to_dict()
 
         signal_scores = (
             df.groupby([self.COL_INSTRUMENT, self.COL_SIGNAL], group_keys=False)
             .apply(self._signal_internal_aggregation)
             .reset_index(name=self.COL_SIGNAL_SCORE)
         )
-        self.ranking_metric.signal_scores = signal_scores.to_dict()
+        self._ranking_metric.signal_scores = signal_scores.to_dict()
         final_scores = (
             signal_scores.groupby(self.COL_INSTRUMENT, group_keys=False)
             .apply(self._signal_between_aggregation)
             .sort_values(ascending=False)
         )
-        self.ranking_metric.final_scores = final_scores.to_dict()
-        return self.ranking_metric
+        self._ranking_metric.final_scores = final_scores.to_dict()
+        return self._ranking_metric
 
     def _percentile_ranking(self, group: pd.DataFrame) -> pd.Series:
         factor = group.name[1]

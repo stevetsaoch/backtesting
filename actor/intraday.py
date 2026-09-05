@@ -62,7 +62,7 @@ class ConsolidationAndBreakoutIndicatorManageActor(Actor, DailyResetMixin):
         # request / response register
         self.msgbus.register(
             endpoint=self.config.msg_enpoint,
-            handler=self._send_dataframe,
+            handler=self._dispatch_msg,
         )
 
     def on_bar(self, bar: Bar):

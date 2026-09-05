@@ -6,7 +6,11 @@ from collections import defaultdict
 from nautilus_trader.model import InstrumentId
 
 from trading_signal.signal import InstrumentSignal, SIGNAL_MANAGER
-from trading_signal.ranking import CANDIDATE_RANKING_METHOD, SignalResultFlat
+from trading_signal.ranking import (
+    CANDIDATE_RANKING_METHOD,
+    SignalResultFlat,
+    RankingMetric,
+)
 
 
 class CandidateManager(ABC, Generic[SIGNAL_MANAGER, CANDIDATE_RANKING_METHOD]):
@@ -21,15 +25,20 @@ class CandidateManager(ABC, Generic[SIGNAL_MANAGER, CANDIDATE_RANKING_METHOD]):
             candidate_ranking_method
         )
         self._signal_result_flat: pd.DataFrame = pd.DataFrame()
-        self._ranking_result: dict = defaultdict()
+        self._ranking_result: RankingMetric = RankingMetric()
+        self._ranked_candidate: list[InstrumentId] = []
 
     @property
     @abstractmethod
-    def candidate(self) -> set[InstrumentSignal]: ...
+    def candidate(self) -> set[InstrumentId]: ...
 
     @property
     @abstractmethod
-    def ranking_result(self) -> dict: ...
+    def ranking_result(self) -> RankingMetric: ...
+
+    @property
+    @abstractmethod
+    def ranked_candidate(self) -> list[InstrumentId]: ...
 
     @abstractmethod
     def _select_candidate(self, signal_map: dict[InstrumentId, InstrumentSignal]): ...
@@ -44,14 +53,22 @@ class CandidateManager(ABC, Generic[SIGNAL_MANAGER, CANDIDATE_RANKING_METHOD]):
 class ORBCandidateManager(CandidateManager):
 
     @property
-    @abstractmethod
-    def ranking_result(self) -> dict:
+    def ranking_result(self) -> RankingMetric:
         return self._ranking_result
 
     @property
-    def candidate(self) -> set[InstrumentSignal]:
-        self._select_candidate(self._signal_manager.signal_map)
+    def candidate(self) -> set[InstrumentId]:
         return self._candidate
+
+    @property
+    def ranked_candidate(self) -> list[InstrumentId]:
+        self._select_candidate(self._signal_manager.signal_map)
+        self._flating_signals_result()
+        self._ranking_candidate()
+        self._ranked_candidate = [
+            instrument_id for instrument_id in self._ranking_result.final_scores.keys()
+        ]
+        return self._ranked_candidate
 
     def _select_candidate(self, signal_map: dict[InstrumentId, InstrumentSignal]):
         for iid, iss in signal_map.items():
@@ -70,7 +87,7 @@ class ORBCandidateManager(CandidateManager):
 
         for can in self._candidate:
             candidate_count += 1
-            sigs = self._signal_manager.signal_map[can]
+            sigs = self._signal_manager.signal_map[can].signals
             for s in sigs:
                 if not s.is_entry_signal:
                     continue

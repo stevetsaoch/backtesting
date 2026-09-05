@@ -168,7 +168,7 @@ class OrderTicketGroup(BaseModel):
     child: OrderTicket
 
 
-class OrderTicketBook:
+class OrderTicketManager:
     def __init__(self):
         self._books: dict[ClientOrderId, OrderTicket] = defaultdict()
         self._instrument_ids: set[InstrumentId] = set()

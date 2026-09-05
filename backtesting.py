@@ -240,7 +240,7 @@ orb_entry_signal = SignalMeta(
 )
 # other
 snapshot_time: datetime.time = datetime.time(10, 30, 0)
-signal_manager = "orb_entry_signal"
+signal_manager = "orb_signal_manager"
 
 # fee model info, not include in config
 fee_per_share = 0.005
@@ -344,7 +344,6 @@ s = ImportableStrategyConfig(
         "data_start_datetime": engine_start_time,
         "bar_types": bar_types,
         "indicator_meta_set": [intraday_1_min],
-        "snapshot_time": snapshot_time,
         "order_rule": order_rule,
         "position_rule": position_rule,
         "risk_rule": risk_rule,
@@ -361,7 +360,7 @@ s = ImportableStrategyConfig(
         "msg_enpoint": "consolidation.strategy",
         "msg_outbound_endpoint": "consolidation.actor",
         "candidate_manager": "orb_candidate_manager",
-        "ranking_method": 
+        "ranking_method": "percentile",
     },
 )
 
@@ -370,7 +369,7 @@ btrc = BacktestRunConfig(
     engine=BacktestEngineConfig(
         trader_id="test-trader",  # hard code
         actors=[a],
-        # strategies=[a],
+        strategies=[s],
         logging=LoggingConfig(log_level="INFO"),
         data_engine=DataEngineConfig(
             time_bars_timestamp_on_close=True,

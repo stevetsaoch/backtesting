@@ -4,7 +4,7 @@ import pandas as pd
 from pathlib import Path
 from collections import defaultdict
 from dataclasses import asdict
-from functools import singledispatchmethod, lru_cache
+from functools import singledispatchmethod
 
 from nautilus_trader.config import StrategyConfig
 from nautilus_trader.core.datetime import unix_nanos_to_dt
@@ -39,12 +39,12 @@ from trading_signal.signal import (
 from trading_signal.ranking import CandidateRankingMethod
 from candidate import CANDIDATE_MANAGER_REGISTRY
 
-from trading_signal.ranking import PercentilRanking, RANKING_METHOD_REGISTRY
+from trading_signal.ranking import RANKING_METHOD_REGISTRY
 from order.order_validator import ORDER_VALIDATOR_REGISTRY
 from order.order import (
     OrderTicket,
     OrderTicketGroup,
-    OrderTicketBook,
+    OrderTicketManager,
     OrderState,
     PositionState,
     OrderRole,
@@ -52,7 +52,6 @@ from order.order import (
     ORDER_COMPOSER_REGISTRY,
 )
 from schemas import (
-    CandidateFlat,
     EventType,
     EventPayloadField,
     Event,
@@ -120,11 +119,12 @@ class ConsolidationAndBreakout(Strategy, DailyResetMixin):
         self._current_session_datetime: datetime.datetime | None = None
         self._current_session_bars: list[Bar] = []
         # watchlist
-        self._watch_list: list[InstrumentId] | None = None
+        self._watchlist: list[InstrumentId] | None = None
         # signal
         self._signal_manager: SignalManager = SIGNAL_MANAGER_REGISTRY[
             self.config.signal_manager
         ](self.config.signal_meta_set)
+
         # candidate
         self._candidate_ranking_method: (
             CandidateRankingMethod
@@ -138,11 +138,6 @@ class ConsolidationAndBreakout(Strategy, DailyResetMixin):
             signal_manager=self._signal_manager,
             candidate_ranking_method=self._candidate_ranking_method,
         )
-        # event
-        self._events: list[Event] = []
-        self._event_dir = Path(
-            f"{NAUTILUS_CONFIG.record_path}{self.config.name}/events"
-        )
         # trade
         self._trading_rule = TradingRulesMutable(
             order_rule=OrderRulesMutable(**asdict(self.config.order_rule)),
@@ -150,7 +145,16 @@ class ConsolidationAndBreakout(Strategy, DailyResetMixin):
             risk_rule=RiskRulesMutable(**asdict(self.config.risk_rule)),
             session_rule=SessionRuleMutable(**asdict(self.config.session_rule)),
         )
-        self._order_ticket_book: OrderTicketBook = OrderTicketBook()
+        # order
+        self._order_validator = ORDER_VALIDATOR_REGISTRY[self.config.order_validator](
+            trading_rule=self._trading_rule, provider=self
+        )
+        self._order_ticket_manager: OrderTicketManager = OrderTicketManager()
+        # event
+        self._events: list[Event] = []
+        self._event_dir = Path(
+            f"{NAUTILUS_CONFIG.record_path}{self.config.name}/events"
+        )
 
     def on_start(self):
         self._init_daily_reset()
@@ -211,7 +215,7 @@ class ConsolidationAndBreakout(Strategy, DailyResetMixin):
 
     def on_order_submitted(self, event: OrderSubmitted):
         datetime = self.clock.utc_now()
-        self._order_ticket_book.update_on_order_submitted(
+        self._order_ticket_manager.update_on_order_submitted(
             event.client_order_id, datetime
         )
         self._create_and_append_event(
@@ -221,13 +225,13 @@ class ConsolidationAndBreakout(Strategy, DailyResetMixin):
 
     def on_order_accepted(self, event: OrderAccepted) -> None:
         datetime = self.clock.utc_now()
-        self._order_ticket_book.update_on_order_accepted(
+        self._order_ticket_manager.update_on_order_accepted(
             event.client_order_id, datetime
         )
 
     def on_order_rejected(self, event: OrderRejected) -> None:
         datetime = self.clock.utc_now()
-        self._order_ticket_book.update_on_order_rejected(
+        self._order_ticket_manager.update_on_order_rejected(
             event.client_order_id, datetime
         )
 
@@ -241,7 +245,7 @@ class ConsolidationAndBreakout(Strategy, DailyResetMixin):
 
     def on_order_canceled(self, event: OrderCanceled) -> None:
         datetime = self.clock.utc_now()
-        self._order_ticket_book.update_on_order_canceled(
+        self._order_ticket_manager.update_on_order_canceled(
             event.client_order_id, datetime
         )
         self._create_and_append_event(
@@ -253,7 +257,9 @@ class ConsolidationAndBreakout(Strategy, DailyResetMixin):
 
     def on_order_expired(self, event: OrderExpired) -> None:
         datetime = self.clock.utc_now()
-        self._order_ticket_book.update_on_order_expired(event.client_order_id, datetime)
+        self._order_ticket_manager.update_on_order_expired(
+            event.client_order_id, datetime
+        )
         self._create_and_append_event(
             event_type=EventType.ORDER_EXPIRED,
             payload={
@@ -263,15 +269,17 @@ class ConsolidationAndBreakout(Strategy, DailyResetMixin):
 
     def on_order_filled(self, event: OrderFilled) -> None:
         datetime = self.clock.utc_now()
-        self._order_ticket_book.update_on_order_filled(event.client_order_id, datetime)
-        self._order_ticket_book.update_position_id(
+        self._order_ticket_manager.update_on_order_filled(
+            event.client_order_id, datetime
+        )
+        self._order_ticket_manager.update_position_id(
             event.client_order_id, event.position_id
         )
-        self._order_ticket_book.update_order_filled_price_qty(
+        self._order_ticket_manager.update_order_filled_price_qty(
             event.client_order_id, event.last_qty, event.last_px
         )
-        self._order_ticket_book.update_cost(event.client_order_id, event.commission)
-        cot = self._order_ticket_book.get_child_order_ticket(event.client_order_id)
+        self._order_ticket_manager.update_cost(event.client_order_id, event.commission)
+        cot = self._order_ticket_manager.get_child_order_ticket(event.client_order_id)
         if cot is not None:
             pass
 
@@ -284,27 +292,27 @@ class ConsolidationAndBreakout(Strategy, DailyResetMixin):
 
     def on_position_opened(self, event: PositionOpened):
         datetime = self.clock.utc_now()
-        self._order_ticket_book.update_position_state(
+        self._order_ticket_manager.update_position_state(
             event.opening_order_id, PositionState.OPEN
         )
-        self._order_ticket_book.update_position_open_time(
+        self._order_ticket_manager.update_position_open_time(
             event.opening_order_id, datetime
         )
 
     def on_position_closed(self, event: PositionClosed) -> None:
         datetime = self.clock.utc_now()
-        self._order_ticket_book.update_position_state(
+        self._order_ticket_manager.update_position_state(
             event.opening_order_id, PositionState.CLOSED
         )
-        self._order_ticket_book.update_position_close_time(
+        self._order_ticket_manager.update_position_close_time(
             event.opening_order_id, datetime
         )
-        self._order_ticket_book.update_position_realized_profit_and_loss(
+        self._order_ticket_manager.update_position_realized_profit_and_loss(
             event.opening_order_id, event.realized_pnl
         )
 
     def on_stop(self):
-        print(self._order_ticket_book._books)
+        print(self._order_ticket_manager._books)
         pass
 
     def _warm_up(self):
@@ -318,26 +326,25 @@ class ConsolidationAndBreakout(Strategy, DailyResetMixin):
         # make event dir
         self._event_dir.mkdir(parents=True, exist_ok=True)
 
-    def _ranking_candidate(self):
-        ranking_metric = PercentilRanking(
-            between_aggregation_method=self.config.signal_aggregation_method,
-        ).rank()
-
     def _post_on_bar(self, event):
         self._request_watchlist()
-        if self._watch_list is None:
+        if self._watchlist is None:
             return
-        self._signal_manager.register(self._watch_list)
+        self._signal_manager.register(self._watchlist)
         self._signal_manager.update_signals(self._current_session_bars)
+        # select and ranking candidate
+        ranked_candidate = self._candidate_manager.ranked_candidate
+        if len(ranked_candidate) == 0:
+            return
+        # preorder validation
+        self._order_validator.pre_order_validate(ranked_candidate)
+        validation_result = self._order_validator.result
 
         for bar in self._current_session_bars:
             # update mfe and mae
-            self._order_ticket_book.upate_mae_mfe(bar)
+            self._order_ticket_manager.upate_mae_mfe(bar)
 
         self._current_session_bars = []
-
-        # ranking candidate
-        self._ranking_candidate()
 
         self.clock.set_time_alert(
             name="create_and_submit_order",
@@ -346,7 +353,7 @@ class ConsolidationAndBreakout(Strategy, DailyResetMixin):
         )
 
     def _create_and_submit_order(self, event):
-        instrument_id = self._pre_order_validation()
+        return
         if instrument_id is None:
             return
 
@@ -359,39 +366,7 @@ class ConsolidationAndBreakout(Strategy, DailyResetMixin):
             if ot.order_role == OrderRole.PARENT:
                 self.submit_order(ot.order)
 
-    def _pre_order_validation(self):
-        if not self._candidate:
-            self._create_and_append_event(
-                event_type=EventType.PRE_ORDER_VALIDATION,
-                payload={
-                    EventPayloadField.ACTION: PreOrderValidationAction.SKIP,
-                    EventPayloadField.REASON: PreOrderValidationReason.NO_CANDIDATE,
-                },
-            )
-            return
-
-        metric = self._candidate_ranking_metric
-        final_score = metric.final_scores
-        instrument_id, score = next(iter(final_score.items()))
-        validator = ORDER_VALIDATOR_REGISTRY[self.config.order_validator](
-            trading_rule=self._trading_rule, provider=self
-        )
-        metric = validator.pre_order_validate(instrument_id)
-
-        if not all(metric.values()):
-            self._create_and_append_event(
-                event_type=EventType.PRE_ORDER_VALIDATION,
-                payload={
-                    EventPayloadField.ACTION: PreOrderValidationAction.SKIP,
-                    EventPayloadField.REASON: PreOrderValidationReason.FAIL,
-                    EventPayloadField.METRICS: metric,
-                },
-            )
-            return
-        else:
-            return instrument_id
-
-    def _create_order_ticket_groups(self, instrument_id: str):
+    def _create_order_ticket_groups(self, instrument_id: InstrumentId):
         order_composer = ORDER_COMPOSER_REGISTRY[self.config.order_composer](
             instrument_id=instrument_id, provider=self
         )
@@ -439,10 +414,10 @@ class ConsolidationAndBreakout(Strategy, DailyResetMixin):
             p_order_ticket.order_child_order_id = c_order.client_order_id
             p_order_ticket.order_state = OrderState.CREATED
             p_order_ticket.order_created_at = self.clock.utc_now()
-            self._order_ticket_book.register_ticket(
+            self._order_ticket_manager.register_ticket(
                 client_order_id=p_order.client_order_id, order_ticket=p_order_ticket
             )
-            self._order_ticket_book.register_ticket(
+            self._order_ticket_manager.register_ticket(
                 client_order_id=c_order.client_order_id, order_ticket=c_order_ticket
             )
             self._create_and_append_event(
@@ -525,7 +500,7 @@ class ConsolidationAndBreakout(Strategy, DailyResetMixin):
             pass
 
     def _forced_close_positions_and_orders(self, event):
-        tickets = self._order_ticket_book.get_tickets()
+        tickets = self._order_ticket_manager.get_tickets()
         forced_close_order_tickets = []
         for ot in tickets.values():
             if ot.order_state == OrderState.SUBMITTED and ot.position_id is None:
@@ -550,26 +525,26 @@ class ConsolidationAndBreakout(Strategy, DailyResetMixin):
 
     def _register_forced_close_order_ticket(self, order_tickets: list[OrderTicket]):
         for t in order_tickets:
-            self._order_ticket_book.register_ticket(t.order_client_order_id, t)
+            self._order_ticket_manager.register_ticket(t.order_client_order_id, t)
 
     def _submit_forced_close_order(self, order_tickets: list[OrderTicket]):
         for t in order_tickets:
             self.submit_order(t.order)
 
     # provider mehtod
-    def get_snapshot_intraday_high(self, instrument_id: str) -> float:
+    def get_snapshot_intraday_high(self, instrument_id: InstrumentId) -> float:
         v = self._snapshot_data.loc[
             self._snapshot_data["instrument_id"] == instrument_id, "intraday_high"
         ].item()
         return v
 
-    def get_snapshot_intraday_low(self, instrument_id: str) -> float:
+    def get_snapshot_intraday_low(self, instrument_id: InstrumentId) -> float:
         v = self._snapshot_data.loc[
             self._snapshot_data["instrument_id"] == instrument_id, "intraday_low"
         ].item()
         return v
 
-    def get_latest_bar_with_trading_bar_type(self, instrument_id: str) -> Bar:
+    def get_latest_bar_with_trading_bar_type(self, instrument_id: InstrumentId) -> Bar:
         target_bar_type = self.instrument_bar_type_map.get(instrument_id)[
             self._trading_rule.order_rule.trading_bar_type
         ]
@@ -582,8 +557,8 @@ class ConsolidationAndBreakout(Strategy, DailyResetMixin):
     def get_intraday_realized_pnl(self) -> float:
         return self._intraday_realized_pnl
 
-    def get_instrument(self, instrument_id: str) -> Instrument:
-        instrument_id = InstrumentId.from_str(instrument_id)
+    def get_instrument(self, instrument_id: InstrumentId) -> Instrument:
+        instrument_id = instrument_id
         instrument = self.cache.instrument(instrument_id)
         return instrument
 
@@ -592,17 +567,15 @@ class ConsolidationAndBreakout(Strategy, DailyResetMixin):
 
     # position
     def get_open_positions(
-        self, side: PositionSide, instrument_id: str
+        self, side: PositionSide, instrument_id: InstrumentId
     ) -> list[Position]:
-        return self.cache.positions_open(
-            instrument_id=InstrumentId.from_str(instrument_id), side=side
-        )
+        return self.cache.positions_open(instrument_id=instrument_id, side=side)
 
     # order
-    def get_open_orders(self, side: OrderSide, instrument_id: str) -> list[Order]:
-        return self.cache.orders_open(
-            side=side, instrument_id=InstrumentId.from_str(instrument_id)
-        )
+    def get_open_orders(
+        self, side: OrderSide, instrument_id: InstrumentId
+    ) -> list[Order]:
+        return self.cache.orders_open(side=side, instrument_id=instrument_id)
 
     # pnl
     def get_unrealized_profit_and_loss(self) -> float:
@@ -620,7 +593,7 @@ class ConsolidationAndBreakout(Strategy, DailyResetMixin):
         realized = current_balance.as_double() - self._trading_rule.risk_rule.balance
         return realized
 
-    def get_depolyed_balance(self, instrument_id: str) -> float:
+    def get_depolyed_balance(self, instrument_id: InstrumentId) -> float:
         balance_from_positions = sum(
             (p.avg_px_open.as_double() * p.quantity.as_double())
             for p in self.cache.positions_open()
@@ -685,20 +658,31 @@ class ConsolidationAndBreakout(Strategy, DailyResetMixin):
     def _on_daily_reset(self):
         # save event
         self._save_events()
-        # reset variables
         # session
         self._current_session_date: datetime.date | None = None
         self._current_session_datetime: datetime.datetime | None = None
         self._current_session_bars: list[Bar] = []
-        # screening, ranking and candidate
-        self._watch_list: list[InstrumentId] | None = None
-        self._candidate: set[str] = set()
-        self._candidate_ranking_metric = None
+        # signal
+        self._signal_manager: SignalManager = SIGNAL_MANAGER_REGISTRY[
+            self.config.signal_manager
+        ](self.config.signal_meta_set)
+        # candidate_manager
+        self._candidate_manager = CANDIDATE_MANAGER_REGISTRY[
+            self.config.candidate_manager
+        ](
+            signal_manager=self._signal_manager,
+            candidate_ranking_method=self._candidate_ranking_method,
+        )
+        # order
+        self._order_validator = ORDER_VALIDATOR_REGISTRY[self.config.order_validator](
+            trading_rule=self._trading_rule, provider=self
+        )
+        self._order_ticket_manager: OrderTicketManager = OrderTicketManager()
 
     # request / response method
     def _request_watchlist(self):
         self.msgbus.send(
-            endpoint=self.config.msg_outbound_endpoint, msg=WatchListRequest
+            endpoint=self.config.msg_outbound_endpoint, msg=WatchListRequest()
         )
 
     @singledispatchmethod
@@ -708,4 +692,4 @@ class ConsolidationAndBreakout(Strategy, DailyResetMixin):
     @_dispatch_msg.register
     def _receive_watchlist(self, msg: WatchListResponse) -> None:
         if msg.is_ready:
-            self._watch_list = msg.payload
+            self._watchlist = msg.payload
