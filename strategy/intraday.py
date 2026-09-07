@@ -4,18 +4,12 @@ import pandas as pd
 from pathlib import Path
 from collections import defaultdict
 from dataclasses import asdict
-from functools import singledispatchmethod
 
 from nautilus_trader.config import StrategyConfig
-from nautilus_trader.core.datetime import unix_nanos_to_dt
 from nautilus_trader.trading.strategy import Strategy
 from nautilus_trader.model.events.position import PositionClosed, PositionOpened
-from nautilus_trader.model import InstrumentId, BarType, Bar
-from nautilus_trader.model.orders import Order
+from nautilus_trader.model import InstrumentId, Bar, BarType
 from nautilus_trader.model.identifiers import Venue
-from nautilus_trader.model.position import Position
-from nautilus_trader.model.enums import OrderType, OrderSide, PositionSide
-from nautilus_trader.model.instruments import Instrument
 from nautilus_trader.model.events import (
     OrderInitialized,
     OrderSubmitted,
@@ -25,11 +19,12 @@ from nautilus_trader.model.events import (
     OrderExpired,
     OrderFilled,
 )
-from nautilus_trader.model.orders import Order
 
 from config import NAUTILUS_CONFIG
 from mixin import DailyResetMixin
-from message import WatchListRequest, WatchListResponse
+from protocols.provider import (
+    WatchlistManagerProvider,
+)
 from indicator.indicator import IndicatorMeta
 from trading_signal.signal import (
     SignalMeta,
@@ -42,21 +37,20 @@ from candidate import CANDIDATE_MANAGER_REGISTRY
 from trading_signal.ranking import RANKING_METHOD_REGISTRY
 from order.order_validator import ORDER_VALIDATOR_REGISTRY
 from order.order import (
-    OrderTicket,
-    OrderTicketGroup,
+    OrderRole,
     OrderTicketManager,
     OrderState,
     PositionState,
-    OrderRole,
-    ForcedCloseOrderComposer,
+)
+from order.order_composer import (
+    ORBOrderTicketComposer,
     ORDER_COMPOSER_REGISTRY,
 )
+from position_manager import POSITION_MANAGER_REGISTRY
 from schemas import (
     EventType,
     EventPayloadField,
     Event,
-    PreOrderValidationAction,
-    PreOrderValidationReason,
     AggregationMethod,
     OrderRules,
     SessionRule,
@@ -78,8 +72,8 @@ class ConsolidationAndBreakoutConfig(StrategyConfig, frozen=True):
     name: str
     warmup_data_start_datetime: datetime.datetime
     data_start_datetime: datetime.datetime
-    bar_types: dict[InstrumentId, list[BarType]]
     indicator_meta_set: list[IndicatorMeta]
+    bar_types: dict[InstrumentId, list[BarType]]
     # signal
     signal_meta_set: list[SignalMeta]
     signal_aggregation_method: AggregationMethod
@@ -98,26 +92,31 @@ class ConsolidationAndBreakoutConfig(StrategyConfig, frozen=True):
     order_validator: str
     order_composer: str
     #
+    # position
+    position_manager: str
     venue_currency_pair: dict
-    # msg
-    msg_enpoint: str
-    msg_outbound_endpoint: str
 
 
 class ConsolidationAndBreakout(Strategy, DailyResetMixin):
-    COL_SCREENING_RESULT = "screening_result"
-    COL_INSTRUMENT_ID = "instrument_id"
-    COL_RANK_POSTFIX = "_rank"
-    COL_RANK_SUM = "rank_sum"
-
-    def __init__(self, config: ConsolidationAndBreakoutConfig):
+    def __init__(
+        self,
+        config: ConsolidationAndBreakoutConfig,
+        watchlist_manager_provider: WatchlistManagerProvider,
+    ):
         super().__init__(config)
-        self.instrument_bar_type_map: dict = defaultdict()
-        self.venue = Venue(self.config.venue_currency_pair["venue"])
+        self._watchlist_manager_provider = watchlist_manager_provider
+        self._venue = Venue(self.config.venue_currency_pair["venue"])
         # session
         self._current_session_date: datetime.date | None = None
         self._current_session_datetime: datetime.datetime | None = None
         self._current_session_bars: list[Bar] = []
+        # trade rule
+        self._trading_rule = TradingRulesMutable(
+            order_rule=OrderRulesMutable(**asdict(self.config.order_rule)),
+            position_rule=PositionRulesMutable(**asdict(self.config.position_rule)),
+            risk_rule=RiskRulesMutable(**asdict(self.config.risk_rule)),
+            session_rule=SessionRuleMutable(**asdict(self.config.session_rule)),
+        )
         # watchlist
         self._watchlist: list[InstrumentId] | None = None
         # signal
@@ -138,18 +137,7 @@ class ConsolidationAndBreakout(Strategy, DailyResetMixin):
             signal_manager=self._signal_manager,
             candidate_ranking_method=self._candidate_ranking_method,
         )
-        # trade
-        self._trading_rule = TradingRulesMutable(
-            order_rule=OrderRulesMutable(**asdict(self.config.order_rule)),
-            position_rule=PositionRulesMutable(**asdict(self.config.position_rule)),
-            risk_rule=RiskRulesMutable(**asdict(self.config.risk_rule)),
-            session_rule=SessionRuleMutable(**asdict(self.config.session_rule)),
-        )
-        # order
-        self._order_validator = ORDER_VALIDATOR_REGISTRY[self.config.order_validator](
-            trading_rule=self._trading_rule, provider=self
-        )
-        self._order_ticket_manager: OrderTicketManager = OrderTicketManager()
+
         # event
         self._events: list[Event] = []
         self._event_dir = Path(
@@ -157,28 +145,45 @@ class ConsolidationAndBreakout(Strategy, DailyResetMixin):
         )
 
     def on_start(self):
+        # order
+        self._order_validator = ORDER_VALIDATOR_REGISTRY[self.config.order_validator](
+            trading_rule=self._trading_rule,
+            cache_info_provider=self.cache,
+            clock_provider=self.clock,
+        )
+        self._order_ticket_manager: OrderTicketManager = OrderTicketManager()
+        self._order_composer: ORBOrderTicketComposer = ORDER_COMPOSER_REGISTRY[
+            self.config.order_composer
+        ](
+            trading_rule=self._trading_rule,
+            orb_snapshot_intraday_info_provider=self._watchlist_manager_provider.get_watchlist_manager(),
+            clock_provider=self.clock,
+            order_factory_method_provider=self.order_factory,
+            cache_info_provider=self.cache,
+        )
+        # position
+        self._position_manager = POSITION_MANAGER_REGISTRY[
+            self.config.position_manager
+        ](
+            trading_rule=self._trading_rule,
+            signal_manager=self._signal_manager,
+            cache_info_provider=self.cache,
+            clock_provider=self.clock,
+        )
+
         self._init_daily_reset()
         self._register_daily_reset(self._on_daily_reset)
+        self._register_daily_reset(self._signal_manager.reset)
+        self._register_daily_reset(self._candidate_manager.reset)
+        self._register_daily_reset(self._order_validator.reset)
+        self._register_daily_reset(self._order_ticket_manager.reset)
+        self._register_daily_reset(self._order_composer.reset)
         self._warm_up()
-        for iid, bts in self.config.bar_types.items():
-            iid_bar_t = {}
-            for bt in bts:
-                iid_bar_t[f"{bt.spec}"] = bt
-                self.subscribe_bars(bt)
-            self.instrument_bar_type_map[str(iid)] = iid_bar_t
 
-        # set timer to froce close the position before the time
-        self.clock.set_timer(
-            name="forced_close_position_and_orders",
-            start_time=self.config.data_start_datetime.replace(
-                hour=self.config.session_rule.forced_close_at.hour,
-                minute=self.config.session_rule.forced_close_at.minute,
-                second=self.config.session_rule.forced_close_at.second,
-                microsecond=self.config.session_rule.forced_close_at.microsecond,
-            ),
-            interval=datetime.timedelta(days=1),
-            callback=self._forced_close_positions_and_orders,
-        )
+        for bts in self.config.bar_types.values():
+            for bt in bts:
+                self.subscribe_bars(bt)
+
         # reset
         self.clock.set_timer(
             name="daily_reset",
@@ -189,11 +194,16 @@ class ConsolidationAndBreakout(Strategy, DailyResetMixin):
             callback=self._check_and_reset,
         )
 
-        # request register
-        self.msgbus.register(
-            endpoint=self.config.msg_enpoint,
-            handler=self._dispatch_msg,
+    def _warm_up(self):
+        self._create_and_append_event(
+            event_type=EventType.WARM_UP,
+            payload={
+                EventPayloadField.DESCRIPTION: "signal between aggregation method",
+                EventPayloadField.CONDITION: self.config.signal_aggregation_method,
+            },
         )
+        # make event dir
+        self._event_dir.mkdir(parents=True, exist_ok=True)
 
     def on_bar(self, bar: Bar):
         self._current_session_bars.append(bar)
@@ -280,8 +290,9 @@ class ConsolidationAndBreakout(Strategy, DailyResetMixin):
         )
         self._order_ticket_manager.update_cost(event.client_order_id, event.commission)
         cot = self._order_ticket_manager.get_child_order_ticket(event.client_order_id)
-        if cot is not None:
-            pass
+        if cot is None:
+            return
+        self.submit_order(cot.order)
 
         self._create_and_append_event(
             event_type=EventType.ORDER_FILLED,
@@ -312,304 +323,133 @@ class ConsolidationAndBreakout(Strategy, DailyResetMixin):
         )
 
     def on_stop(self):
-        print(self._order_ticket_manager._books)
+        print(self._order_ticket_manager._books.keys())
+        print(len(self._order_ticket_manager._books.keys()))
         pass
 
-    def _warm_up(self):
-        self._create_and_append_event(
-            event_type=EventType.WARM_UP,
-            payload={
-                EventPayloadField.DESCRIPTION: "signal between aggregation method",
-                EventPayloadField.CONDITION: self.config.signal_aggregation_method,
-            },
-        )
-        # make event dir
-        self._event_dir.mkdir(parents=True, exist_ok=True)
-
     def _post_on_bar(self, event):
-        self._request_watchlist()
-        if self._watchlist is None:
-            return
-        self._signal_manager.register(self._watchlist)
+        # update
+        # update signal
         self._signal_manager.update_signals(self._current_session_bars)
-        # select and ranking candidate
-        ranked_candidate = self._candidate_manager.ranked_candidate
-        if len(ranked_candidate) == 0:
-            return
-        # preorder validation
-        self._order_validator.pre_order_validate(ranked_candidate)
-        validation_result = self._order_validator.result
 
+        # upate mae and mfe
         for bar in self._current_session_bars:
             # update mfe and mae
             self._order_ticket_manager.upate_mae_mfe(bar)
 
-        self._current_session_bars = []
+        # position managing
+        if self._position_manager.evaluate_forced_close_triggered():
+            self.clock.set_time_alert(
+                name="forced_close",
+                alert_time=self.clock.utc_now() + datetime.timedelta(seconds=2),
+                callback=self._forced_close,
+            )
+            return
+        elif self._position_manager.evaluate_exit_signal_triggered():
+            self.clock.set_time_alert(
+                name="forced_close",
+                alert_time=self.clock.utc_now() + datetime.timedelta(seconds=2),
+                callback=self._forced_close,
+            )
 
-        self.clock.set_time_alert(
-            name="create_and_submit_order",
-            alert_time=self.clock.utc_now() + datetime.timedelta(seconds=2),
-            callback=self._create_and_submit_order,
+        # watchlist
+        is_watchlist_ready = (
+            self._watchlist_manager_provider.get_watchlist_manager().is_watchlist_ready
+        )
+        if not is_watchlist_ready:
+            return
+        self._signal_manager.register(
+            self._watchlist_manager_provider.get_watchlist_manager().watchlist
         )
 
-    def _create_and_submit_order(self, event):
-        return
-        if instrument_id is None:
+        # select and ranking candidate
+        ranked_candidate = self._candidate_manager.ranked_candidate
+        if len(ranked_candidate) == 0:
             return
 
-        order_ticket_group = self._create_order_ticket_groups(instrument_id)
-        if order_ticket_group is None:
+        # pre order validation
+        self._order_validator.pre_order_validate(ranked_candidate)
+        pre_order_validation_result = self._order_validator.pre_order_validation_result
+        final_candidates = []
+        for iid, r in pre_order_validation_result.items():
+            if all(r.values()):
+                final_candidates.append(iid)
+        if len(final_candidates) == 0:
             return
 
-        order_tickets = self._create_and_register_order_ticket(order_ticket_group)
-        for ot in order_tickets:
+        # order compose
+        self._order_composer.compose(final_candidates)
+
+        # register
+        for otg in self._order_composer.order_ticket_groups:
+            self._order_ticket_manager.register_ticket(
+                client_order_id=otg.parent.order_client_order_id,
+                order_ticket=otg.parent,
+            )
+            self._order_ticket_manager.register_ticket(
+                client_order_id=otg.child.order_client_order_id,
+                order_ticket=otg.child,
+            )
+
+        # post order validation
+        for ot in self._order_ticket_manager.get_tickets_with_specific_state(
+            order_state=OrderState.CREATED
+        ).values():
             if ot.order_role == OrderRole.PARENT:
+                self._order_validator.post_order_validate(ot)
+
+        post_order_validation_result = (
+            self._order_validator.post_order_validation_result
+        )
+        for otci, r in post_order_validation_result.items():
+            if all(r.values()):
+                self._order_ticket_manager.update_on_validation_succeed(
+                    otci, self.clock.utc_now()
+                )
+            else:
+                self._order_ticket_manager.update_on_validation_failed(
+                    otci, self.clock.utc_now()
+                )
+
+        # submit orders
+        for ot in self._order_ticket_manager.get_tickets().values():
+            if (
+                ot.order_state == OrderState.VALIDATION_SUCCESSED
+                and ot.order_role == OrderRole.PARENT
+            ):
                 self.submit_order(ot.order)
 
-    def _create_order_ticket_groups(self, instrument_id: InstrumentId):
-        order_composer = ORDER_COMPOSER_REGISTRY[self.config.order_composer](
-            instrument_id=instrument_id, provider=self
-        )
-        order_composer.compose()
-        order_tickets = order_composer.order_ticket_groups
-        return order_tickets
+        # reset sessionly
+        self._candidate_manager.reset()
+        self._order_validator.reset()
+        self._order_composer.reset()
+        self._position_manager.reset()
+        self._current_session_bars = []
 
-    def _create_and_register_order_ticket(
-        self, order_ticket_groups: list[OrderTicketGroup]
-    ):
-        tickets = []
-        for otg in order_ticket_groups:
-            p_order_ticket = otg.parent
-            c_order_ticket = otg.child
-            # create child order
-            c_order = self._create_order(c_order_ticket)
-            c_order_ticket.order_client_order_id = c_order.client_order_id
-            c_order_ticket.order = c_order
-            # creat parent order
-            p_order = self._create_order(p_order_ticket)
-            p_order_ticket.order = p_order
-            p_order_ticket.order_client_order_id = p_order.client_order_id
-            # post order validate
-            validator = ORDER_VALIDATOR_REGISTRY[self.config.order_validator](
-                trading_rule=self._trading_rule, provider=self
-            )
-            metric = validator.post_order_validate(p_order_ticket)
-            if not all(metric.values()):
-                self._create_and_append_event(
-                    event_type=EventType.POST_ORDER_VALIDATION,
-                    payload={
-                        EventPayloadField.ACTION: PreOrderValidationAction.SKIP,
-                        EventPayloadField.REASON: PreOrderValidationReason.FAIL,
-                        EventPayloadField.METRICS: metric,
-                    },
+    def _forced_close(self, event):
+        if self._position_manager.is_forced_close_triggered:
+            # order
+            ooots = [
+                ot
+                for ot in self._order_ticket_manager.get_tickets().values()
+                if ot.order_state == OrderState.SUBMITTED
+                and ot.position_id is None
+                and not ot.is_forced_close_order
+            ]
+            if len(ooots) > 0:
+                for ooot in ooots:
+                    self.cancel_all_orders(ooot.instrument_id)
+            # position
+            ots = []
+            for id in self._position_manager.client_order_ids:
+                ots.append(self._order_ticket_manager.get_ticket(id))
+            fots = self._order_composer.compose_forced_close_order_ticket(ots)
+            for fot in fots:
+                self._order_ticket_manager.register_ticket(
+                    client_order_id=fot.order_client_order_id, order_ticket=fot
                 )
-                continue
-
-            tickets.append(p_order_ticket)
-            tickets.append(c_order_ticket)
-
-            c_order_ticket.order_parent_order_id = p_order.client_order_id
-            c_order_ticket.order_state = OrderState.CREATED
-            c_order_ticket.order_created_at = self.clock.utc_now()
-            p_order_ticket.order_child_order_id = c_order.client_order_id
-            p_order_ticket.order_state = OrderState.CREATED
-            p_order_ticket.order_created_at = self.clock.utc_now()
-            self._order_ticket_manager.register_ticket(
-                client_order_id=p_order.client_order_id, order_ticket=p_order_ticket
-            )
-            self._order_ticket_manager.register_ticket(
-                client_order_id=c_order.client_order_id, order_ticket=c_order_ticket
-            )
-            self._create_and_append_event(
-                event_type=EventType.ORDER_CREATED,
-                payload={
-                    EventPayloadField.DETAIL: p_order_ticket.model_dump(
-                        context={"readable": True}
-                    )
-                },
-            )
-            self._create_and_append_event(
-                event_type=EventType.ORDER_CREATED,
-                payload={
-                    EventPayloadField.DETAIL: c_order_ticket.model_dump(
-                        context={"readable": True}
-                    )
-                },
-            )
-
-        return tickets
-
-    # order helper method
-    def _create_order(self, order_ticket: OrderTicket):
-        """
-        router method
-        """
-        if order_ticket.entry_order_type == OrderType.MARKET:
-            order = self._create_market_order(order_ticket)
-        elif order_ticket.entry_order_type == OrderType.STOP_MARKET:
-            order = self._create_stop_market_order(order_ticket)
-        elif order_ticket.entry_order_type == OrderType.LIMIT:
-            order = self._create_limit_order(order_ticket)
-        self._create_and_append_event(
-            event_type=EventType.ORDER_TICKET_CREATED,
-            payload={
-                EventPayloadField.DETAIL: order_ticket.model_dump(
-                    context={"readable": True}
-                )
-            },
-        )
-        return order
-
-    # orders helper function
-    def _create_market_order(self, order_ticket: OrderTicket) -> Order:
-        order = self.order_factory.market(
-            instrument_id=order_ticket.instrument_id,
-            order_side=order_ticket.order_side,
-            quantity=order_ticket.quantity,
-            time_in_force=order_ticket.time_in_force,
-        )
-        return order
-
-    def _create_limit_order(self, order_ticket: OrderTicket) -> Order:
-        pass
-
-    def _create_stop_limit_order(self, order_ticket: OrderTicket) -> Order:
-        pass
-
-    def _create_stop_market_order(self, order_ticket: OrderTicket) -> Order:
-        order = self.order_factory.stop_market(
-            instrument_id=order_ticket.instrument_id,
-            order_side=order_ticket.order_side,
-            quantity=order_ticket.quantity,
-            trigger_price=order_ticket.trigger_price,
-            time_in_force=order_ticket.time_in_force,
-            expire_time=order_ticket.expire_time,
-            reduce_only=True,
-        )
-        return order
-
-    # position
-    def _closing_position(self):
-        # closing position logic
-        # close the position that no new high during past five minute
-        if len(self.cache.position_open()) == 0:
-            return
-        for position in self.cache.positions_open():
-            instrument_id = position.instrument_id
-            # get the current high from subscribed dataframe and
-            pass
-
-    def _forced_close_positions_and_orders(self, event):
-        tickets = self._order_ticket_manager.get_tickets()
-        forced_close_order_tickets = []
-        for ot in tickets.values():
-            if ot.order_state == OrderState.SUBMITTED and ot.position_id is None:
-                self.cancel_order(self.cache.order(ot.client_order_id))
-
-            elif ot.position_id is not None and ot.position_state == PositionState.OPEN:
-                self.cache.is_position_open(ot.position_id)
-                forced_close_order_ticket = self._created_forced_close_order_ticket(ot)
-                forced_close_order_tickets.append(forced_close_order_ticket)
-        self._register_forced_close_order_ticket(forced_close_order_tickets)
-        self._submit_forced_close_order(forced_close_order_tickets)
-
-    def _created_forced_close_order_ticket(self, parent_order_ticket: OrderTicket):
-        order_ticket = ForcedCloseOrderComposer().compose(parent_order_ticket)
-        order = self._create_order(order_ticket)
-        order_ticket.order = order
-        order_ticket.order_client_order_id = order.client_order_id
-        order_ticket.order_state = OrderState.CREATED
-        order_ticket.order_created_at = self.clock.utc_now()
-        order_ticket.is_forced_close_order = True
-        return order_ticket
-
-    def _register_forced_close_order_ticket(self, order_tickets: list[OrderTicket]):
-        for t in order_tickets:
-            self._order_ticket_manager.register_ticket(t.order_client_order_id, t)
-
-    def _submit_forced_close_order(self, order_tickets: list[OrderTicket]):
-        for t in order_tickets:
-            self.submit_order(t.order)
-
-    # provider mehtod
-    def get_snapshot_intraday_high(self, instrument_id: InstrumentId) -> float:
-        v = self._snapshot_data.loc[
-            self._snapshot_data["instrument_id"] == instrument_id, "intraday_high"
-        ].item()
-        return v
-
-    def get_snapshot_intraday_low(self, instrument_id: InstrumentId) -> float:
-        v = self._snapshot_data.loc[
-            self._snapshot_data["instrument_id"] == instrument_id, "intraday_low"
-        ].item()
-        return v
-
-    def get_latest_bar_with_trading_bar_type(self, instrument_id: InstrumentId) -> Bar:
-        target_bar_type = self.instrument_bar_type_map.get(instrument_id)[
-            self._trading_rule.order_rule.trading_bar_type
-        ]
-        bar = self.cache.bars(target_bar_type)[0]
-        return bar
-
-    def get_trading_rule(self) -> TradingRulesMutable:
-        return self._trading_rule
-
-    def get_intraday_realized_pnl(self) -> float:
-        return self._intraday_realized_pnl
-
-    def get_instrument(self, instrument_id: InstrumentId) -> Instrument:
-        instrument_id = instrument_id
-        instrument = self.cache.instrument(instrument_id)
-        return instrument
-
-    def get_current_datetime(self) -> datetime.datetime:
-        return self.clock.utc_now()
-
-    # position
-    def get_open_positions(
-        self, side: PositionSide, instrument_id: InstrumentId
-    ) -> list[Position]:
-        return self.cache.positions_open(instrument_id=instrument_id, side=side)
-
-    # order
-    def get_open_orders(
-        self, side: OrderSide, instrument_id: InstrumentId
-    ) -> list[Order]:
-        return self.cache.orders_open(side=side, instrument_id=instrument_id)
-
-    # pnl
-    def get_unrealized_profit_and_loss(self) -> float:
-        open_positions = self.cache.positions_open(instrument_id=None)
-        unrealized_pnl = 0.0
-        for p in open_positions:
-            latest_bar = self.get_latest_bar_with_trading_bar_type(str(p.instrument_id))
-            pnl = p.unrealized_pnl(latest_bar.low)
-            unrealized_pnl += pnl.as_double()
-        return unrealized_pnl
-
-    def get_realized_profit_and_loss(self) -> float:
-        current_balance = self.portfolio.account(self.venue).balance_total()
-
-        realized = current_balance.as_double() - self._trading_rule.risk_rule.balance
-        return realized
-
-    def get_depolyed_balance(self, instrument_id: InstrumentId) -> float:
-        balance_from_positions = sum(
-            (p.avg_px_open.as_double() * p.quantity.as_double())
-            for p in self.cache.positions_open()
-        )
-
-        reference_bar = self.get_latest_bar_with_trading_bar_type(instrument_id)
-        balance_from_pending_orders = sum(
-            (
-                ((reference_bar.high.as_double() + reference_bar.low.as_double()) / 2)
-                * o.quantity.as_double()
-            )
-            for o in list(self.cache.orders_inflight()) + list(self.cache.orders_open())
-        )
-
-        balance_deployed = balance_from_positions + balance_from_pending_orders
-        return balance_deployed
+                self.submit_order(fot.order)
+        self._position_manager.reset()
 
     # event log
     def _create_and_append_event(
@@ -675,21 +515,8 @@ class ConsolidationAndBreakout(Strategy, DailyResetMixin):
         )
         # order
         self._order_validator = ORDER_VALIDATOR_REGISTRY[self.config.order_validator](
-            trading_rule=self._trading_rule, provider=self
+            trading_rule=self._trading_rule,
+            cache_info_provider=self.cache,
+            clock_provider=self.clock,
         )
         self._order_ticket_manager: OrderTicketManager = OrderTicketManager()
-
-    # request / response method
-    def _request_watchlist(self):
-        self.msgbus.send(
-            endpoint=self.config.msg_outbound_endpoint, msg=WatchListRequest()
-        )
-
-    @singledispatchmethod
-    def _dispatch_msg(self, msg) -> None:
-        self.log.warning(f"Unhandled custom data type: {type(msg).__name__}")
-
-    @_dispatch_msg.register
-    def _receive_watchlist(self, msg: WatchListResponse) -> None:
-        if msg.is_ready:
-            self._watchlist = msg.payload

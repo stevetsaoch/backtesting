@@ -37,5 +37,5 @@ class WatchListRequest(Request):
 
 @dataclass
 class WatchListResponse(Response):
-    is_ready: bool
+    is_snapshot_data_ready: bool
     payload: list[InstrumentId]

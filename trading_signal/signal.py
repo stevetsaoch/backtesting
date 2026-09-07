@@ -105,25 +105,23 @@ class SignalManager(ABC):
 
     @property
     @abstractmethod
-    def signal_map(self) -> dict[InstrumentId, InstrumentSignal]:
-        pass
+    def signal_map(self) -> dict[InstrumentId, InstrumentSignal]: ...
 
     @property
     @abstractmethod
-    def signal_meta_set(self) -> list[SignalMeta]:
-        pass
+    def signal_meta_set(self) -> list[SignalMeta]: ...
 
     @abstractmethod
-    def register(self, instrument_ids: list[InstrumentId]):
-        pass
+    def register(self, instrument_ids: list[InstrumentId]): ...
 
     @abstractmethod
-    def update_signals(self, bars: list[Bar]):
-        pass
+    def update_signals(self, bars: list[Bar]): ...
 
     @abstractmethod
-    def _build_signals(self) -> list[BaseSignal]:
-        pass
+    def reset(self) -> None: ...
+
+    @abstractmethod
+    def _build_signals(self) -> list[BaseSignal]: ...
 
 
 SIGNAL_MANAGER = TypeVar("SIGNAL_MANAGER", bound=SignalManager)
@@ -156,6 +154,10 @@ class ORBSignalManager(SignalManager):
             else:
                 for s in self._signal_map[bar.bar_type.instrument_id].signals:
                     s.update(bar)
+
+    def reset(self):
+        self._signal_map: dict[InstrumentId, InstrumentSignal] = defaultdict()
+        self._is_instrument_ids_fixed = False
 
     def _build_signals(self):
         sl = []

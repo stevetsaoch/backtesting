@@ -3,6 +3,7 @@ import datetime
 import operator
 import zoneinfo
 import pandas as pd
+from decimal import Decimal
 from dataclasses import dataclass, asdict
 from typing import Literal, ClassVar, Any, Union
 from pydantic import BaseModel, ConfigDict, model_validator, field_serializer
@@ -422,7 +423,7 @@ class VenueConfig(BaseModel):
     fee_model_config_path: str | None = None
     base_latency_nanos: int | None = None
 
-    def to_backtest_venue_config(self):
+    def to_backtest_venue_config(self) -> BacktestVenueConfig:
         bvc = BacktestVenueConfig(
             name=self.name,
             oms_type=self.oms_type,
@@ -660,40 +661,42 @@ class AccountConfig:
 @dataclass(frozen=True)
 class OrderRules:
     trading_bar_type: str
-    stop_price_buffer: float
+    stop_price_buffer: Decimal
     order_value_maximum: (
         float  # tradable_balance / open_position_maximum, update frequence: daily
     )
     # down sizing
-    order_size_multiplier_trigger_loss_ratio: float
-    order_size_multiplier_trigger_minimum: float  # order_size_multiplier_trigger_loss_ratio * intraday_loss_limit, update frequence: daily
-    order_size_multiplier_ratio: float  # change order size when intraday loss / intraday_loss_limit > trigger_loss_ratio
+    order_size_multiplier_trigger_loss_ratio: Decimal
+    order_size_multiplier_trigger_minimum: Decimal  # order_size_multiplier_trigger_loss_ratio * intraday_loss_limit, update frequence: daily
+    order_size_multiplier_ratio: Decimal  # change order size when intraday loss / intraday_loss_limit > trigger_loss_ratio
 
 
 @dataclass(frozen=True)
 class PositionRules:
-    open_position_maximum: float
+    open_position_maximum: Decimal
 
 
 @dataclass(frozen=True)
 class RiskRules:
     # balance
-    balance: float
-    tradable_balance_ratio: float
-    tradable_balance: float  # balance * tradabel_balance_raito, update frequence: daily
+    balance: Decimal
+    tradable_balance_ratio: Decimal
+    tradable_balance: (
+        Decimal  # balance * tradabel_balance_raito, update frequence: daily
+    )
     # loss
-    intraday_risk_ratio: float
+    intraday_risk_ratio: Decimal
     intraday_loss_maximum: (
-        float  # balance * intraday_risk_ratio, update frequence: daily
+        Decimal  # balance * intraday_risk_ratio, update frequence: daily
     )
     # opportunity cost, actual risk value > max(cost_efficiency_minimum, risk_value_minimum)
-    cost_ratio_maximum: float
-    cost_estimated_per_trade: float
+    cost_ratio_maximum: Decimal
+    cost_estimated_per_trade: Decimal
     cost_efficiency_value_minimum: (
-        float  # cost estimated / cost ratio, prevent cost drag
+        Decimal  # cost estimated / cost ratio, prevent cost drag
     )
-    risk_value_ratio_minimum: float
-    risk_value_minimum: float  # risk_value_ratio * balance, update frequence: daily
+    risk_value_ratio_minimum: Decimal
+    risk_value_minimum: Decimal  # risk_value_ratio * balance, update frequence: daily
 
 
 @dataclass(frozen=True)
@@ -706,38 +709,40 @@ class SessionRule:
 
 class OrderRulesMutable(BaseModel):
     trading_bar_type: str
-    stop_price_buffer: float
+    stop_price_buffer: Decimal
     order_value_maximum: (
-        float  # tradable_balance / open_position_maximum, update frequence: daily
+        Decimal  # tradable_balance / open_position_maximum, update frequence: daily
     )
     # down sizing
-    order_size_multiplier_trigger_loss_ratio: float
-    order_size_multiplier_trigger_minimum: float  # order_size_multiplier_trigger_loss_ratio * intraday_loss_limit, update frequence: daily
-    order_size_multiplier_ratio: float  # change order size when intraday loss / intraday_loss_limit > trigger_loss_ratio
+    order_size_multiplier_trigger_loss_ratio: Decimal
+    order_size_multiplier_trigger_minimum: Decimal  # order_size_multiplier_trigger_loss_ratio * intraday_loss_limit, update frequence: daily
+    order_size_multiplier_ratio: Decimal  # change order size when intraday loss / intraday_loss_limit > trigger_loss_ratio
 
 
 class PositionRulesMutable(BaseModel):
-    open_position_maximum: float
+    open_position_maximum: Decimal
 
 
 class RiskRulesMutable(BaseModel):
     # balance
-    balance: float
-    tradable_balance_ratio: float
-    tradable_balance: float  # balance * tradabel_balance_raito, update frequence: daily
+    balance: Decimal
+    tradable_balance_ratio: Decimal
+    tradable_balance: (
+        Decimal  # balance * tradabel_balance_raito, update frequence: daily
+    )
     # loss
-    intraday_risk_ratio: float
+    intraday_risk_ratio: Decimal
     intraday_loss_maximum: (
-        float  # balance * intraday_risk_ratio, update frequence: daily
+        Decimal  # balance * intraday_risk_ratio, update frequence: daily
     )
     # opportunity cost, actual risk value > max(cost_efficiency_minimum, risk_value_minimum)
-    cost_ratio_maximum: float
-    cost_estimated_per_trade: float
+    cost_ratio_maximum: Decimal
+    cost_estimated_per_trade: Decimal
     cost_efficiency_value_minimum: (
-        float  # cost estimated / cost ratio, prevent cost drag
+        Decimal  # cost estimated / cost ratio, prevent cost drag
     )
-    risk_value_ratio_minimum: float
-    risk_value_minimum: float  # risk_value_ratio * balance, update frequence: daily
+    risk_value_ratio_minimum: Decimal
+    risk_value_minimum: Decimal  # risk_value_ratio * balance, update frequence: daily
 
 
 class SessionRuleMutable(BaseModel):

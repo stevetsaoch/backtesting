@@ -1,6 +1,5 @@
 import datetime
 from collections import defaultdict
-from functools import singledispatchmethod
 
 from nautilus_trader.common.actor import Actor
 from nautilus_trader.config import ActorConfig
@@ -9,8 +8,8 @@ from nautilus_trader.indicators.base import Indicator
 
 from mixin import DailyResetMixin
 from watchlist import WATCHLIST_MANAGER_REGISTRY
+from protocols.provider import ORBSnapshotIntradayInfoProvider
 from indicator.indicator import IndicatorMeta, INDICATOR_REGISTRY
-from message import WatchListRequest, WatchListResponse
 
 
 class ConsolidationAndBreakoutIndicatorManageActorConfig(ActorConfig, frozen=True):
@@ -23,8 +22,6 @@ class ConsolidationAndBreakoutIndicatorManageActorConfig(ActorConfig, frozen=Tru
         datetime.time
     )  # time point which decide when the consolidation period end
     watchlist_manager: str
-    msg_enpoint: str
-    msg_outbound_endpoint: str
 
 
 class ConsolidationAndBreakoutIndicatorManageActor(Actor, DailyResetMixin):
@@ -58,11 +55,6 @@ class ConsolidationAndBreakoutIndicatorManageActor(Actor, DailyResetMixin):
             ),
             interval=datetime.timedelta(days=1),
             callback=self._check_and_reset,
-        )
-        # request / response register
-        self.msgbus.register(
-            endpoint=self.config.msg_enpoint,
-            handler=self._dispatch_msg,
         )
 
     def on_bar(self, bar: Bar):
@@ -128,17 +120,9 @@ class ConsolidationAndBreakoutIndicatorManageActor(Actor, DailyResetMixin):
                 for bt in t_bts:
                     self.register_indicator_for_bars(bt, t_ind)
 
-    @singledispatchmethod
-    def _dispatch_msg(self, msg) -> None:
-        self.log.warning(f"Unhandled custom data type: {type(msg).__name__}")
-
-    @_dispatch_msg.register
-    def _send_watchlist(self, msg: WatchListRequest):
-        res = WatchListResponse(
-            is_ready=self._watchlist_manager.is_ready,
-            payload=self._watchlist_manager.watchlist,
-        )
-        self.msgbus.send(endpoint=self.config.msg_outbound_endpoint, msg=res)
+    # provider method
+    def get_watchlist_manager(self) -> ORBSnapshotIntradayInfoProvider:
+        return self._watchlist_manager
 
     def _check_and_reset(self, event) -> bool:
         date = self.clock.utc_now().date()

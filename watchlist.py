@@ -37,13 +37,13 @@ class WatchListManager(ABC):
         )
         self._snapshot_time = snapshot_time
         self._snapshot_data: pd.DataFrame = pd.DataFrame()
-        self._is_ready: bool = False
+        self._is_watchlist_ready: bool = False
         self._data: pd.DataFrame = pd.DataFrame()
         self._watchlist: list[InstrumentId] = []
 
     @property
     @abstractmethod
-    def is_ready(self) -> bool:
+    def is_watchlist_ready(self) -> bool:
         pass
 
     @property
@@ -94,8 +94,8 @@ class ORBWatchListManager(WatchListManager):
         return self._snapshot_data
 
     @property
-    def is_ready(self):
-        return self._is_ready
+    def is_watchlist_ready(self):
+        return self._is_watchlist_ready
 
     @property
     def watchlist(self):
@@ -109,11 +109,11 @@ class ORBWatchListManager(WatchListManager):
             # build watchlist
             self._watchlist = self._build_watchlist()
             self._snapshot_data = self._build_dataframe()
-            self._is_ready = True
+            self._is_watchlist_ready = True
 
     def reset(self):
         self._snapshot_data: pd.DataFrame = pd.DataFrame()
-        self._is_ready: bool = False
+        self._is_watchlist_ready: bool = False
         self._data: pd.DataFrame = pd.DataFrame()
         self._watchlist: list[InstrumentId] = []
 
@@ -168,6 +168,20 @@ class ORBWatchListManager(WatchListManager):
             fields[cfg.name] = pd.Series(dtype=dtype)
 
         return pd.DataFrame(fields)
+
+    def get_snapshot_intraday_high(self, instrument_id: InstrumentId) -> float:
+        v = self.snapshot_data.loc[
+            self.snapshot_data[self.COL_INSTRUMENT_ID] == str(instrument_id),
+            "intraday_high",
+        ].item()
+        return v
+
+    def get_snapshot_intraday_low(self, instrument_id: InstrumentId) -> float:
+        v = self.snapshot_data.loc[
+            self.snapshot_data[self.COL_INSTRUMENT_ID] == str(instrument_id),
+            "intraday_low",
+        ].item()
+        return v
 
 
 WATCHLIST_MANAGER_REGISTRY: dict[str, type] = {

@@ -1,10 +1,7 @@
 import enum
 import datetime
-from typing import Generic
 from decimal import Decimal
-from abc import ABC, abstractmethod
 from collections import defaultdict
-from decimal import Decimal
 from pydantic import BaseModel, model_serializer, ConfigDict, Field
 from pydantic_core.core_schema import SerializationInfo
 
@@ -13,14 +10,12 @@ from nautilus_trader.model import InstrumentId, ClientOrderId, PositionId, Bar
 from nautilus_trader.model.enums import OrderSide, OrderType, TimeInForce
 from nautilus_trader.model.objects import Price, Quantity, Money
 
-from protocols.provider import ActorInfoProvider, PG
-
-from schemas import TradingRulesMutable
-
 
 # model
 class OrderState(str, enum.Enum):
     REQUEST = "request"
+    VALIDATION_FAILED = "validation_failed"
+    VALIDATION_SUCCESSED = "validation_succeed"
     CREATED = "created"
     ACCEPTED = "accepted"
     SUBMITTED = "submitted"
@@ -47,6 +42,8 @@ class OrderTicket(BaseModel):
     # for event log
     # time
     order_created_at: datetime.datetime | None = None
+    order_validation_failed_at: datetime.datetime | None = None
+    order_validation_succeed_at: datetime.datetime | None = None
     order_accepted_at: datetime.datetime | None = None
     order_submitted_at: datetime.datetime | None = None
     order_rejected_at: datetime.datetime | None = None
@@ -57,22 +54,22 @@ class OrderTicket(BaseModel):
     order_state: OrderState = Field(default=OrderState.REQUEST)
     order_role: OrderRole | None = None
     order_client_order_id: ClientOrderId | None = None
-    order_reference_price: float | None = None
-    order_risk_price: float | None = None
+    order_reference_price: Decimal | None = None
+    order_risk_price: Decimal | None = None
     order_child_order_id: ClientOrderId | None = None
     order_parent_order_id: ClientOrderId | None = None
-    order_filled_price_qty: list[tuple[float, float]] = []
+    order_filled_price_qty: list[tuple[Decimal, Decimal]] = []
     order: Order | None = None
     # position
     position_id: PositionId | None = None
     position_state: PositionState | None = None
     position_open_at: datetime.datetime | None = None
     position_closed_at: datetime.datetime | None = None
-    position_realized_profit_and_loss: float | None = None
-    position_maximum_favorable_excursion: float | None = None
-    position_maximum_adverse_excursion: float | None = None
+    position_realized_profit_and_loss: Decimal | None = None
+    position_maximum_favorable_excursion: Decimal | None = None
+    position_maximum_adverse_excursion: Decimal | None = None
     # cost
-    cost: float | None = None
+    cost: Decimal | None = None
     # for order factory
     instrument_id: InstrumentId | None = None
     order_side: OrderSide | None = None
@@ -163,11 +160,6 @@ class OrderTicket(BaseModel):
         return data
 
 
-class OrderTicketGroup(BaseModel):
-    parent: OrderTicket
-    child: OrderTicket
-
-
 class OrderTicketManager:
     def __init__(self):
         self._books: dict[ClientOrderId, OrderTicket] = defaultdict()
@@ -182,8 +174,19 @@ class OrderTicketManager:
 
         return oot
 
+    def reset(self):
+        self._books: dict[ClientOrderId, OrderTicket] = defaultdict()
+        self._instrument_ids: set[InstrumentId] = set()
+
     def get_tickets(self) -> dict[ClientOrderId, OrderTicket]:
         return self._books
+
+    def get_tickets_with_specific_state(
+        self, order_state: OrderState
+    ) -> dict[ClientOrderId, OrderTicket]:
+        r = {k: v for k, v in self._books.items() if v.order_state == order_state}
+
+        return r
 
     def get_ticket(self, client_order_id: ClientOrderId):
         return self._books.get(client_order_id)
@@ -200,6 +203,18 @@ class OrderTicketManager:
     ):
         self._books[client_order_id] = order_ticket
         self._instrument_ids.add(order_ticket.instrument_id)
+
+    def update_on_validation_failed(
+        self, client_order_id: ClientOrderId, time: datetime.time
+    ):
+        self._books[client_order_id].order_state = OrderState.VALIDATION_FAILED
+        self._books[client_order_id].order_validation_failed_at = time
+
+    def update_on_validation_succeed(
+        self, client_order_id: ClientOrderId, time: datetime.time
+    ):
+        self._books[client_order_id].order_state = OrderState.VALIDATION_SUCCESSED
+        self._books[client_order_id].order_validation_succeed_at = time
 
     def update_on_order_submitted(
         self, client_order_id: ClientOrderId, time: datetime.time
@@ -314,198 +329,3 @@ class OrderTicketManager:
                 v.position_maximum_adverse_excursion = tmp_mae
             elif tmp_mae < 0.0 and tmp_mae < v.position_maximum_adverse_excursion:
                 v.position_maximum_adverse_excursion = tmp_mae
-
-
-class OrderTicketComposer(ABC, Generic[PG]):
-    def __init__(self, provider: PG, instrument_id: str):
-        self._provider: PG = provider
-        self._instrument_id = instrument_id
-        self._order_ticket_groups: list[OrderTicketGroup] = []
-
-    @property
-    @abstractmethod
-    def order_ticket_groups(self) -> list[OrderTicketGroup]:
-        return self._order_ticket_groups
-
-    @abstractmethod
-    def compose(self): ...
-
-
-class ORBOrderTicketComposer(OrderTicketComposer[ActorInfoProvider]):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self._trading_rule: TradingRulesMutable = self._get_trading_rules()
-        self._instrument = self._provider.get_instrument(self._instrument_id)
-        self._parent_order_ticket: OrderTicket
-        self._child_order_ticket: OrderTicket
-
-    @property
-    def order_ticket_groups(self):
-        return self._order_ticket_groups
-
-    def compose(self):
-        self._create_child_order_ticket()
-        self._create_parent_order_ticket()
-        # risk price
-        risk_price = self._calculate_risk_price()
-        self._parent_order_ticket.order_risk_price = risk_price
-        self._child_order_ticket.trigger_price = self._instrument.make_price(risk_price)
-        # quantity
-        quantity = self._calculate_quantity()
-        # happen when the bar.close is lower than stop loss price
-        if quantity is None:
-            return
-        self._parent_order_ticket.quantity = self._instrument.make_qty(quantity)
-        self._child_order_ticket.quantity = self._instrument.make_qty(quantity)
-        # referencing
-        self._parent_order_ticket.order_child_order_id = (
-            self._child_order_ticket.order_client_order_id
-        )
-        self._child_order_ticket.order_parent_order_id = (
-            self._parent_order_ticket.order_client_order_id
-        )
-
-        # order group
-        order_ticket_group = OrderTicketGroup(
-            parent=self._parent_order_ticket, child=self._child_order_ticket
-        )
-        self._order_ticket_groups.append(order_ticket_group)
-
-    def _create_parent_order_ticket(self):
-        parent_order_ticket: OrderTicket = OrderTicket(
-            instrument_id=InstrumentId.from_str(self._instrument_id)
-        )
-        parent_order_ticket.order_side = OrderSide.BUY
-        parent_order_ticket.entry_order_type = OrderType.MARKET
-        parent_order_ticket.time_in_force = TimeInForce.FOK
-        parent_order_ticket.expire_time = self._provider.get_current_datetime().replace(
-            hour=self._trading_rule.session_rule.forced_close_at.hour,
-            minute=self._trading_rule.session_rule.forced_close_at.minute,
-            second=self._trading_rule.session_rule.forced_close_at.second,
-            tzinfo=None,
-        )
-        parent_order_ticket.order_reference_price = self._calculate_entry_price()
-        parent_order_ticket.order_role = OrderRole.PARENT
-        self._parent_order_ticket = parent_order_ticket
-
-    def _create_child_order_ticket(self):
-        # child order
-        child_order_ticket: OrderTicket = OrderTicket(
-            instrument_id=InstrumentId.from_str(self._instrument_id)
-        )
-        child_order_ticket.order_role = OrderRole.CHILD
-        child_order_ticket.order_side = OrderSide.SELL
-        child_order_ticket.entry_order_type = OrderType.STOP_MARKET
-        child_order_ticket.time_in_force = TimeInForce.GTD
-        child_order_ticket.expire_time = self._provider.get_current_datetime().replace(
-            hour=self._trading_rule.session_rule.forced_close_at.hour,
-            minute=self._trading_rule.session_rule.forced_close_at.minute,
-            second=self._trading_rule.session_rule.forced_close_at.second,
-            tzinfo=None,
-        )
-        child_order_ticket.reduce_only = True
-        child_order_ticket.order_reference_price = self._calculate_risk_price()
-        self._child_order_ticket = child_order_ticket
-
-    def _calculate_quantity(self) -> Quantity:
-        bar = self._provider.get_latest_bar_with_trading_bar_type(self._instrument_id)
-        target_price = bar.close.as_double()
-
-        sl_price = (
-            self._get_intraday_low() - self._trading_rule.order_rule.stop_price_buffer
-        )
-        risk = bar.close.as_double() - sl_price
-        if risk <= 0.0:
-            return
-        budget = self._calculate_budget()
-        theo_qty = budget / risk
-        theo_cost = bar.close.as_double() * theo_qty
-
-        qty: float = 0.0
-
-        if theo_cost > budget:
-            qty = budget / target_price
-        elif theo_cost <= budget:
-            qty = theo_qty
-
-        if self._is_down_sizing_trigger():
-            qty = qty * self._trading_rule.order_rule.order_size_multiplier_ratio
-
-        return self._instrument.make_qty(int(qty))
-
-    def _is_down_sizing_trigger(self) -> bool:
-        current_pnl = (
-            self._provider.get_realized_profit_and_loss()
-            + self._provider.get_unrealized_profit_and_loss()
-        )
-        if current_pnl < 0:
-            if (
-                abs(current_pnl)
-                > self._trading_rule.order_rule.order_size_multiplier_trigger_minimum
-            ):
-                return True
-            else:
-                return False
-        else:
-            return False
-
-    def _calculate_budget(self):
-        deployed_balance = self._provider.get_depolyed_balance(self._instrument_id)
-        budget = self._trading_rule.risk_rule.tradable_balance - deployed_balance
-        if budget > self._trading_rule.order_rule.order_value_maximum:
-            budget = self._trading_rule.order_rule.order_value_maximum
-        return budget
-
-    def _calculate_tp_price(self):
-        bar = self._provider.get_latest_bar_with_trading_bar_type(self._instrument_id)
-        price = bar.high.as_double() * 100.0
-
-        return price
-
-    def _calculate_risk_price(self):
-        price = (
-            self._get_intraday_low() - self._trading_rule.order_rule.stop_price_buffer
-        )
-        return price
-
-    def _calculate_entry_price(self):
-        bar = self._provider.get_latest_bar_with_trading_bar_type(self._instrument_id)
-        return bar.close.as_double()
-
-    def _get_intraday_high(self):
-        return self._provider.get_snapshot_intraday_high(self._instrument_id)
-
-    def _get_intraday_low(self):
-        return self._provider.get_snapshot_intraday_low(self._instrument_id)
-
-    def _get_trading_rules(self):
-        return self._provider.get_trading_rule()
-
-
-class ForcedCloseOrderComposer:
-    def __init__(self):
-        pass
-
-    def compose(self, parent_order_ticket: OrderTicket):
-        order_ticket: OrderTicket = OrderTicket(
-            instrument_id=parent_order_ticket.instrument_id
-        )
-        order_ticket.order_side = (
-            OrderSide.SELL
-            if parent_order_ticket.order_side == OrderSide.BUY
-            else OrderSide.BUY
-        )
-        order_ticket.entry_order_type = OrderType.MARKET
-        order_ticket.time_in_force = TimeInForce.GTC
-        order_ticket.order_role = OrderRole.PARENT
-        order_ticket.reduce_only = True
-        order_ticket.quantity = parent_order_ticket.quantity
-        return order_ticket
-
-
-ORDER_COMPOSER_REGISTRY = {"orb_order_composer": ORBOrderTicketComposer}
-
-
-class OrderFactory:
-    def __init__(self):
-        pass

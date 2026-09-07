@@ -19,11 +19,11 @@ class CandidateManager(ABC, Generic[SIGNAL_MANAGER, CANDIDATE_RANKING_METHOD]):
         signal_manager: SIGNAL_MANAGER,
         candidate_ranking_method: CANDIDATE_RANKING_METHOD,
     ):
-        self._candidate: set[InstrumentId] = set()
         self._signal_manager: SIGNAL_MANAGER = signal_manager
         self._candidate_ranking_method: CANDIDATE_RANKING_METHOD = (
             candidate_ranking_method
         )
+        self._candidate: set[InstrumentId] = set()
         self._signal_result_flat: pd.DataFrame = pd.DataFrame()
         self._ranking_result: RankingMetric = RankingMetric()
         self._ranked_candidate: list[InstrumentId] = []
@@ -39,6 +39,9 @@ class CandidateManager(ABC, Generic[SIGNAL_MANAGER, CANDIDATE_RANKING_METHOD]):
     @property
     @abstractmethod
     def ranked_candidate(self) -> list[InstrumentId]: ...
+
+    @abstractmethod
+    def reset(self) -> None: ...
 
     @abstractmethod
     def _select_candidate(self, signal_map: dict[InstrumentId, InstrumentSignal]): ...
@@ -69,6 +72,12 @@ class ORBCandidateManager(CandidateManager):
             instrument_id for instrument_id in self._ranking_result.final_scores.keys()
         ]
         return self._ranked_candidate
+
+    def reset(self):
+        self._candidate: set[InstrumentId] = set()
+        self._signal_result_flat: pd.DataFrame = pd.DataFrame()
+        self._ranking_result: RankingMetric = RankingMetric()
+        self._ranked_candidate: list[InstrumentId] = []
 
     def _select_candidate(self, signal_map: dict[InstrumentId, InstrumentSignal]):
         for iid, iss in signal_map.items():

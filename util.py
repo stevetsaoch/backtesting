@@ -2,6 +2,7 @@ import os
 import re
 import threading
 import time
+import importlib
 
 
 class PacingController:
@@ -68,3 +69,9 @@ def find_files(root_dir, pattern):
                     result.append(full_path)
 
     return result
+
+
+def load_class_from_path(path: str):
+    module_path, class_name = path.split(":")
+    module = importlib.import_module(module_path)
+    return getattr(module, class_name)
