@@ -4,12 +4,12 @@ import pandas as pd
 from pathlib import Path
 from collections import defaultdict
 from dataclasses import asdict
+from devtools import pprint
 
 from nautilus_trader.config import StrategyConfig
 from nautilus_trader.trading.strategy import Strategy
-from nautilus_trader.model.events.position import PositionClosed, PositionOpened
 from nautilus_trader.model import InstrumentId, Bar, BarType
-from nautilus_trader.model.identifiers import Venue
+from nautilus_trader.model.events.position import PositionClosed, PositionOpened
 from nautilus_trader.model.events import (
     OrderInitialized,
     OrderSubmitted,
@@ -25,16 +25,12 @@ from mixin import DailyResetMixin
 from protocols.provider import (
     WatchlistManagerProvider,
 )
-from indicator.indicator import IndicatorMeta
 from trading_signal.signal import (
     SignalMeta,
-    SignalManager,
-    SIGNAL_MANAGER_REGISTRY,
 )
-from trading_signal.ranking import CandidateRankingMethod
+from trading_signal.signal_manager import SignalManager, SIGNAL_MANAGER_REGISTRY
+from trading_signal.ranking import CandidateRankingMethod, RANKING_METHOD_REGISTRY
 from candidate import CANDIDATE_MANAGER_REGISTRY
-
-from trading_signal.ranking import RANKING_METHOD_REGISTRY
 from order.order_validator import ORDER_VALIDATOR_REGISTRY
 from order.order import (
     OrderRole,
@@ -46,21 +42,28 @@ from order.order_composer import (
     ORBOrderTicketComposer,
     ORDER_COMPOSER_REGISTRY,
 )
-from position_manager import POSITION_MANAGER_REGISTRY
-from schemas import (
-    EventType,
-    EventPayloadField,
-    Event,
-    AggregationMethod,
-    OrderRules,
-    SessionRule,
-    PositionRules,
-    RiskRules,
+from position_evaluator import POSITION_EVALUATOR_REGISTRY
+from trading_rule_manager import (
+    TRADING_RULE_MANAGER_REGISTRY,
+    PortfolioInfoMutable,
     TradingRulesMutable,
     OrderRulesMutable,
     PositionRulesMutable,
     RiskRulesMutable,
     SessionRuleMutable,
+    FeeModelInfoMutable,
+)
+from schemas import (
+    EventType,
+    EventPayloadField,
+    Event,
+    AggregationMethod,
+    PortfolioInfo,
+    FeeModelInfo,
+    OrderRules,
+    SessionRule,
+    PositionRules,
+    RiskRules,
 )
 
 
@@ -70,9 +73,9 @@ class ConsolidationAndBreakoutConfig(StrategyConfig, frozen=True):
     """
 
     name: str
+    # data
     warmup_data_start_datetime: datetime.datetime
     data_start_datetime: datetime.datetime
-    indicator_meta_set: list[IndicatorMeta]
     bar_types: dict[InstrumentId, list[BarType]]
     # signal
     signal_meta_set: list[SignalMeta]
@@ -82,19 +85,18 @@ class ConsolidationAndBreakoutConfig(StrategyConfig, frozen=True):
     candidate_manager: str
     ranking_method: str
     # trading rule
+    portfolio_info: PortfolioInfo
+    fee_model_info: FeeModelInfo
     order_rule: OrderRules
     position_rule: PositionRules
     risk_rule: RiskRules
     session_rule: SessionRule
+    trading_rule_manager: str
     # order
-    order_config_factory: str
-    order_type: str
     order_validator: str
     order_composer: str
-    #
     # position
-    position_manager: str
-    venue_currency_pair: dict
+    position_evaluator: str
 
 
 class ConsolidationAndBreakout(Strategy, DailyResetMixin):
@@ -104,14 +106,17 @@ class ConsolidationAndBreakout(Strategy, DailyResetMixin):
         watchlist_manager_provider: WatchlistManagerProvider,
     ):
         super().__init__(config)
+        # provider
         self._watchlist_manager_provider = watchlist_manager_provider
-        self._venue = Venue(self.config.venue_currency_pair["venue"])
+
         # session
-        self._current_session_date: datetime.date | None = None
         self._current_session_datetime: datetime.datetime | None = None
         self._current_session_bars: list[Bar] = []
+
         # trade rule
         self._trading_rule = TradingRulesMutable(
+            portfolio_info=PortfolioInfoMutable(**asdict(self.config.portfolio_info)),
+            fee_model_info=FeeModelInfoMutable(**asdict(self.config.fee_model_info)),
             order_rule=OrderRulesMutable(**asdict(self.config.order_rule)),
             position_rule=PositionRulesMutable(**asdict(self.config.position_rule)),
             risk_rule=RiskRulesMutable(**asdict(self.config.risk_rule)),
@@ -162,13 +167,22 @@ class ConsolidationAndBreakout(Strategy, DailyResetMixin):
             cache_info_provider=self.cache,
         )
         # position
-        self._position_manager = POSITION_MANAGER_REGISTRY[
-            self.config.position_manager
+        self._position_evaluator = POSITION_EVALUATOR_REGISTRY[
+            self.config.position_evaluator
         ](
             trading_rule=self._trading_rule,
             signal_manager=self._signal_manager,
             cache_info_provider=self.cache,
             clock_provider=self.clock,
+        )
+
+        self._trading_rule_manager = TRADING_RULE_MANAGER_REGISTRY[
+            self.config.trading_rule_manager
+        ](
+            trading_rule=self._trading_rule,
+            account_info_provider=self.portfolio.account(
+                self._trading_rule.portfolio_info.venue
+            ),
         )
 
         self._init_daily_reset()
@@ -178,6 +192,7 @@ class ConsolidationAndBreakout(Strategy, DailyResetMixin):
         self._register_daily_reset(self._order_validator.reset)
         self._register_daily_reset(self._order_ticket_manager.reset)
         self._register_daily_reset(self._order_composer.reset)
+        self._register_daily_reset(self._position_evaluator.reset)
         self._warm_up()
 
         for bts in self.config.bar_types.values():
@@ -195,13 +210,6 @@ class ConsolidationAndBreakout(Strategy, DailyResetMixin):
         )
 
     def _warm_up(self):
-        self._create_and_append_event(
-            event_type=EventType.WARM_UP,
-            payload={
-                EventPayloadField.DESCRIPTION: "signal between aggregation method",
-                EventPayloadField.CONDITION: self.config.signal_aggregation_method,
-            },
-        )
         # make event dir
         self._event_dir.mkdir(parents=True, exist_ok=True)
 
@@ -289,10 +297,11 @@ class ConsolidationAndBreakout(Strategy, DailyResetMixin):
             event.client_order_id, event.last_qty, event.last_px
         )
         self._order_ticket_manager.update_cost(event.client_order_id, event.commission)
+
+        # submit child order
         cot = self._order_ticket_manager.get_child_order_ticket(event.client_order_id)
-        if cot is None:
-            return
-        self.submit_order(cot.order)
+        if cot is not None:
+            self.submit_order(cot.order)
 
         self._create_and_append_event(
             event_type=EventType.ORDER_FILLED,
@@ -308,6 +317,13 @@ class ConsolidationAndBreakout(Strategy, DailyResetMixin):
         )
         self._order_ticket_manager.update_position_open_time(
             event.opening_order_id, datetime
+        )
+
+        # register exit signal when order filled
+        self._signal_manager.register_exit_signal(
+            event.opening_order_id,
+            event.instrument_id,
+            established_at=self.clock.utc_now(),
         )
 
     def on_position_closed(self, event: PositionClosed) -> None:
@@ -333,19 +349,17 @@ class ConsolidationAndBreakout(Strategy, DailyResetMixin):
         self._signal_manager.update_signals(self._current_session_bars)
 
         # upate mae and mfe
-        for bar in self._current_session_bars:
-            # update mfe and mae
-            self._order_ticket_manager.upate_mae_mfe(bar)
+        self._order_ticket_manager.upate_mae_mfe(self._current_session_bars)
 
         # position managing
-        if self._position_manager.evaluate_forced_close_triggered():
+        if self._position_evaluator.evaluate_forced_close_triggered():
             self.clock.set_time_alert(
                 name="forced_close",
                 alert_time=self.clock.utc_now() + datetime.timedelta(seconds=2),
                 callback=self._forced_close,
             )
             return
-        elif self._position_manager.evaluate_exit_signal_triggered():
+        elif self._position_evaluator.evaluate_exit_signal_triggered():
             self.clock.set_time_alert(
                 name="forced_close",
                 alert_time=self.clock.utc_now() + datetime.timedelta(seconds=2),
@@ -358,10 +372,10 @@ class ConsolidationAndBreakout(Strategy, DailyResetMixin):
         )
         if not is_watchlist_ready:
             return
-        self._signal_manager.register(
-            self._watchlist_manager_provider.get_watchlist_manager().watchlist
+        self._signal_manager.register_entry_signal(
+            self._watchlist_manager_provider.get_watchlist_manager().watchlist,
+            established_at=self.clock.utc_now(),
         )
-
         # select and ranking candidate
         ranked_candidate = self._candidate_manager.ranked_candidate
         if len(ranked_candidate) == 0:
@@ -423,11 +437,11 @@ class ConsolidationAndBreakout(Strategy, DailyResetMixin):
         self._candidate_manager.reset()
         self._order_validator.reset()
         self._order_composer.reset()
-        self._position_manager.reset()
+        self._position_evaluator.reset()
         self._current_session_bars = []
 
     def _forced_close(self, event):
-        if self._position_manager.is_forced_close_triggered:
+        if self._position_evaluator.is_forced_close_triggered:
             # order
             ooots = [
                 ot
@@ -441,7 +455,7 @@ class ConsolidationAndBreakout(Strategy, DailyResetMixin):
                     self.cancel_all_orders(ooot.instrument_id)
             # position
             ots = []
-            for id in self._position_manager.client_order_ids:
+            for id in self._position_evaluator.client_order_ids:
                 ots.append(self._order_ticket_manager.get_ticket(id))
             fots = self._order_composer.compose_forced_close_order_ticket(ots)
             for fot in fots:
@@ -449,7 +463,32 @@ class ConsolidationAndBreakout(Strategy, DailyResetMixin):
                     client_order_id=fot.order_client_order_id, order_ticket=fot
                 )
                 self.submit_order(fot.order)
-        self._position_manager.reset()
+        elif self._position_evaluator.is_exit_signal_triggered:
+            # close stop lost order
+            # position
+            cos = []
+            ots = []
+            for id in self._position_evaluator.client_order_ids:
+                pot = self._order_ticket_manager.get_ticket(id)
+                co = self._order_ticket_manager.get_ticket(
+                    pot.order_child_order_id
+                ).order
+                cos.append(co)
+                ots.append(pot)
+
+            # cancel original stop loss order
+            for co in cos:
+                self.cancel_order(co)
+
+            # submit force close order
+            fots = self._order_composer.compose_forced_close_order_ticket(ots)
+            for fot in fots:
+                self._order_ticket_manager.register_ticket(
+                    client_order_id=fot.order_client_order_id, order_ticket=fot
+                )
+                self.submit_order(fot.order)
+
+        self._position_evaluator.reset()
 
     # event log
     def _create_and_append_event(
@@ -482,41 +521,16 @@ class ConsolidationAndBreakout(Strategy, DailyResetMixin):
         )
 
     # reset
-    def _check_and_reset(self, event) -> bool:
-        date = self.clock.utc_now().date()
-        if self._current_session_date is None:
-            self._current_session_date = date
-            return False
-
-        if date != self._current_session_date:
-            self._current_session_date = date
-            for cb in self._reset_callbacks:
-                cb()
-            return True
-        return False
+    def _check_and_reset(self, event):
+        for cb in self._reset_callbacks:
+            cb()
 
     def _on_daily_reset(self):
         # save event
         self._save_events()
+        self._trading_rule_manager.update()
+        pprint(self._trading_rule_manager._trading_rule)
+
         # session
-        self._current_session_date: datetime.date | None = None
         self._current_session_datetime: datetime.datetime | None = None
         self._current_session_bars: list[Bar] = []
-        # signal
-        self._signal_manager: SignalManager = SIGNAL_MANAGER_REGISTRY[
-            self.config.signal_manager
-        ](self.config.signal_meta_set)
-        # candidate_manager
-        self._candidate_manager = CANDIDATE_MANAGER_REGISTRY[
-            self.config.candidate_manager
-        ](
-            signal_manager=self._signal_manager,
-            candidate_ranking_method=self._candidate_ranking_method,
-        )
-        # order
-        self._order_validator = ORDER_VALIDATOR_REGISTRY[self.config.order_validator](
-            trading_rule=self._trading_rule,
-            cache_info_provider=self.cache,
-            clock_provider=self.clock,
-        )
-        self._order_ticket_manager: OrderTicketManager = OrderTicketManager()

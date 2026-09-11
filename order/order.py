@@ -181,15 +181,27 @@ class OrderTicketManager:
     def get_tickets(self) -> dict[ClientOrderId, OrderTicket]:
         return self._books
 
+    def get_ticket(self, client_order_id: ClientOrderId):
+        return self._books.get(client_order_id)
+
     def get_tickets_with_specific_state(
         self, order_state: OrderState
     ) -> dict[ClientOrderId, OrderTicket]:
         r = {k: v for k, v in self._books.items() if v.order_state == order_state}
-
         return r
 
-    def get_ticket(self, client_order_id: ClientOrderId):
-        return self._books.get(client_order_id)
+    def get_open_position_tickets_with_instrument_id(
+        self, instrument_id: InstrumentId
+    ) -> list[OrderTicket]:
+        ots = []
+        for ot in self._books.values():
+            if (
+                ot.instrument_id == instrument_id
+                and ot.position_state == PositionState.OPEN
+            ):
+
+                ots.append(ot)
+        return ots
 
     def get_child_order_ticket(self, client_order_id: ClientOrderId):
         ot = self._books.get(client_order_id)
@@ -293,39 +305,52 @@ class OrderTicketManager:
             realized_profit_and_loss
         )
 
-    def upate_mae_mfe(self, bar: Bar):
-        if not bar.bar_type.instrument_id in self._instrument_ids:
-            return
-        for v in self._books.values():
-            if not v.instrument_id == bar.bar_type.instrument_id:
-                continue
-            if v.position_id is None:
-                continue
-            if v.order_role != OrderRole.PARENT:
-                continue
-            if v.is_forced_close_order:
-                continue
+    def upate_mae_mfe(self, bars: list[Bar]):
+        for bar in bars:
+            if not bar.bar_type.instrument_id in self._instrument_ids:
+                return
+            for v in self._books.values():
+                if not v.instrument_id == bar.bar_type.instrument_id:
+                    continue
+                if v.position_id is None:
+                    continue
+                if v.order_role != OrderRole.PARENT:
+                    continue
+                if v.is_forced_close_order:
+                    continue
 
-            if v.order_side == OrderSide.BUY:
-                tmp_mae = sum(
-                    [(bar.low - fpq[0]) * fpq[1] for fpq in v.order_filled_price_qty]
-                )
-                tmp_mfe = sum(
-                    [(bar.high - fpq[0]) * fpq[1] for fpq in v.order_filled_price_qty]
-                )
-            elif v.order_side == OrderSide.SELL:
-                tmp_mfe = sum(
-                    [(bar.low - fpq[0]) * fpq[1] for fpq in v.order_filled_price_qty]
-                ) * Decimal(-1.0)
-                tmp_mae = sum(
-                    [(bar.high - fpq[0]) * fpq[1] for fpq in v.order_filled_price_qty]
-                ) * Decimal(-1.0)
+                if v.order_side == OrderSide.BUY:
+                    tmp_mae = sum(
+                        [
+                            (bar.low - fpq[0]) * fpq[1]
+                            for fpq in v.order_filled_price_qty
+                        ]
+                    )
+                    tmp_mfe = sum(
+                        [
+                            (bar.high - fpq[0]) * fpq[1]
+                            for fpq in v.order_filled_price_qty
+                        ]
+                    )
+                elif v.order_side == OrderSide.SELL:
+                    tmp_mfe = sum(
+                        [
+                            (bar.low - fpq[0]) * fpq[1]
+                            for fpq in v.order_filled_price_qty
+                        ]
+                    ) * Decimal(-1.0)
+                    tmp_mae = sum(
+                        [
+                            (bar.high - fpq[0]) * fpq[1]
+                            for fpq in v.order_filled_price_qty
+                        ]
+                    ) * Decimal(-1.0)
 
-            if tmp_mfe > 0.0 and v.position_maximum_favorable_excursion is None:
-                v.position_maximum_favorable_excursion = tmp_mfe
-            elif tmp_mfe > 0.0 and tmp_mfe > v.position_maximum_favorable_excursion:
-                v.position_maximum_favorable_excursion = tmp_mfe
-            elif tmp_mae < 0.0 and v.position_maximum_adverse_excursion is None:
-                v.position_maximum_adverse_excursion = tmp_mae
-            elif tmp_mae < 0.0 and tmp_mae < v.position_maximum_adverse_excursion:
-                v.position_maximum_adverse_excursion = tmp_mae
+                if tmp_mfe > 0.0 and v.position_maximum_favorable_excursion is None:
+                    v.position_maximum_favorable_excursion = tmp_mfe
+                elif tmp_mfe > 0.0 and tmp_mfe > v.position_maximum_favorable_excursion:
+                    v.position_maximum_favorable_excursion = tmp_mfe
+                elif tmp_mae < 0.0 and v.position_maximum_adverse_excursion is None:
+                    v.position_maximum_adverse_excursion = tmp_mae
+                elif tmp_mae < 0.0 and tmp_mae < v.position_maximum_adverse_excursion:
+                    v.position_maximum_adverse_excursion = tmp_mae

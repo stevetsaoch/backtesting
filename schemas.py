@@ -12,7 +12,7 @@ from nautilus_trader.backtest.config import ImportableLatencyModelConfig
 from nautilus_trader.model.instruments import Equity
 from nautilus_trader.model.identifiers import InstrumentId, Symbol
 from nautilus_trader.model.objects import Price, Quantity
-from nautilus_trader.model import Venue
+from nautilus_trader.model import Venue, Currency
 from nautilus_trader.model import Bar as NauBar
 from nautilus_trader.model.currencies import USD
 from nautilus_trader.config import (
@@ -659,6 +659,20 @@ class AccountConfig:
 
 
 @dataclass(frozen=True)
+class PortfolioInfo:
+    venue: Venue
+    currency: Currency
+    balance: Decimal
+
+
+@dataclass(frozen=True)
+class FeeModelInfo:
+    fee_per_share: Decimal
+    minimum_fee_per_order: Decimal
+    maximum_fee_ratio_per_order: Decimal
+
+
+@dataclass(frozen=True)
 class OrderRules:
     trading_bar_type: str
     stop_price_buffer: Decimal
@@ -679,7 +693,6 @@ class PositionRules:
 @dataclass(frozen=True)
 class RiskRules:
     # balance
-    balance: Decimal
     tradable_balance_ratio: Decimal
     tradable_balance: (
         Decimal  # balance * tradabel_balance_raito, update frequence: daily
@@ -690,6 +703,7 @@ class RiskRules:
         Decimal  # balance * intraday_risk_ratio, update frequence: daily
     )
     # opportunity cost, actual risk value > max(cost_efficiency_minimum, risk_value_minimum)
+    target_profit_minimum: Decimal
     cost_ratio_maximum: Decimal
     cost_estimated_per_trade: Decimal
     cost_efficiency_value_minimum: (
@@ -705,58 +719,6 @@ class SessionRule:
     market_close_at: datetime.time
     trading_start_at: datetime.time
     forced_close_at: datetime.time
-
-
-class OrderRulesMutable(BaseModel):
-    trading_bar_type: str
-    stop_price_buffer: Decimal
-    order_value_maximum: (
-        Decimal  # tradable_balance / open_position_maximum, update frequence: daily
-    )
-    # down sizing
-    order_size_multiplier_trigger_loss_ratio: Decimal
-    order_size_multiplier_trigger_minimum: Decimal  # order_size_multiplier_trigger_loss_ratio * intraday_loss_limit, update frequence: daily
-    order_size_multiplier_ratio: Decimal  # change order size when intraday loss / intraday_loss_limit > trigger_loss_ratio
-
-
-class PositionRulesMutable(BaseModel):
-    open_position_maximum: Decimal
-
-
-class RiskRulesMutable(BaseModel):
-    # balance
-    balance: Decimal
-    tradable_balance_ratio: Decimal
-    tradable_balance: (
-        Decimal  # balance * tradabel_balance_raito, update frequence: daily
-    )
-    # loss
-    intraday_risk_ratio: Decimal
-    intraday_loss_maximum: (
-        Decimal  # balance * intraday_risk_ratio, update frequence: daily
-    )
-    # opportunity cost, actual risk value > max(cost_efficiency_minimum, risk_value_minimum)
-    cost_ratio_maximum: Decimal
-    cost_estimated_per_trade: Decimal
-    cost_efficiency_value_minimum: (
-        Decimal  # cost estimated / cost ratio, prevent cost drag
-    )
-    risk_value_ratio_minimum: Decimal
-    risk_value_minimum: Decimal  # risk_value_ratio * balance, update frequence: daily
-
-
-class SessionRuleMutable(BaseModel):
-    market_open_at: datetime.time
-    market_close_at: datetime.time
-    trading_start_at: datetime.time
-    forced_close_at: datetime.time
-
-
-class TradingRulesMutable(BaseModel):
-    order_rule: OrderRulesMutable
-    position_rule: PositionRulesMutable
-    risk_rule: RiskRulesMutable
-    session_rule: SessionRuleMutable
 
 
 @dataclass(frozen=True)

@@ -1,11 +1,10 @@
 import pandas as pd
 from typing import Generic
 from abc import ABC, abstractmethod
-from collections import defaultdict
 
 from nautilus_trader.model import InstrumentId
 
-from trading_signal.signal import InstrumentSignal, SIGNAL_MANAGER
+from trading_signal.signal_manager import InstrumentSignal, SIGNAL_MANAGER
 from trading_signal.ranking import (
     CANDIDATE_RANKING_METHOD,
     SignalResultFlat,
@@ -44,7 +43,9 @@ class CandidateManager(ABC, Generic[SIGNAL_MANAGER, CANDIDATE_RANKING_METHOD]):
     def reset(self) -> None: ...
 
     @abstractmethod
-    def _select_candidate(self, signal_map: dict[InstrumentId, InstrumentSignal]): ...
+    def _select_candidate(
+        self, entry_signal_map: dict[InstrumentId, InstrumentSignal]
+    ): ...
 
     @abstractmethod
     def _flating_signals_result(self): ...
@@ -65,7 +66,7 @@ class ORBCandidateManager(CandidateManager):
 
     @property
     def ranked_candidate(self) -> list[InstrumentId]:
-        self._select_candidate(self._signal_manager.signal_map)
+        self._select_candidate(self._signal_manager.entry_signal_map)
         self._flating_signals_result()
         self._ranking_candidate()
         self._ranked_candidate = [
@@ -79,8 +80,8 @@ class ORBCandidateManager(CandidateManager):
         self._ranking_result: RankingMetric = RankingMetric()
         self._ranked_candidate: list[InstrumentId] = []
 
-    def _select_candidate(self, signal_map: dict[InstrumentId, InstrumentSignal]):
-        for iid, iss in signal_map.items():
+    def _select_candidate(self, entry_signal_map: dict[InstrumentId, InstrumentSignal]):
+        for iid, iss in entry_signal_map.items():
             if all([s.signal for s in iss.signals]):
                 if iid in self._candidate:
                     continue
@@ -96,7 +97,7 @@ class ORBCandidateManager(CandidateManager):
 
         for can in self._candidate:
             candidate_count += 1
-            sigs = self._signal_manager.signal_map[can].signals
+            sigs = self._signal_manager.entry_signal_map[can].signals
             for s in sigs:
                 if not s.is_entry_signal:
                     continue

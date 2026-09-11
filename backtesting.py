@@ -23,6 +23,8 @@ from schemas import (
     PercentileRankingConfig,
     ZScoreRankingConfig,
     RankingConfigs,
+    PortfolioInfo,
+    FeeModelInfo,
     OrderRules,
     PositionRules,
     RiskRules,
@@ -125,7 +127,7 @@ intraday_1_min = IndicatorMeta(
     ],
 )
 
-# signal
+# entry signal
 clv_factor = FactorConfig(
     name="clv",
     operator=Operator.GTE,
@@ -154,10 +156,6 @@ two_bar_higher_close = FactorConfig(
         zscore=ZScoreRankingConfig(ascending=True),
     ),
 )
-ranking_method = "percentile"
-
-signal_aggregation_method = AggregationMethod.MINIMUM
-
 orb_entry_signal = SignalMeta(
     name="orb_entry_signal",
     factor_configs=[clv_factor, two_bar_higher_close],
@@ -165,36 +163,58 @@ orb_entry_signal = SignalMeta(
     is_entry_signal=True,
     is_exit_signal=False,
 )
-# other
-snapshot_time: datetime.time = datetime.time(10, 30, 0)
+
+# exit signal
+one_hour_no_new_high = FactorConfig(
+    name="one_hour_no_new_high",
+    operator=Operator.GT,
+    threshold=0.0,
+    ascending=False,
+    bar_buffer_size=1,
+    bar_spec_requirement=f"1-{BarAggregation.MINUTE}",
+    ranking_config=RankingConfigs(
+        percentile=PercentileRankingConfig(
+            tie_breaking_method=TieBreakingMethod.MINIMUM, ascending=True
+        ),
+        zscore=ZScoreRankingConfig(ascending=True),
+    ),
+)
+orb_exit_signal = SignalMeta(
+    name="orb_exit_signal",
+    factor_configs=[one_hour_no_new_high],
+    internal_aggregation_method=AggregationMethod.MINIMUM,
+    is_entry_signal=False,
+    is_exit_signal=True,
+)
+ranking_method = "percentile"
+signal_aggregation_method = AggregationMethod.MINIMUM
 signal_manager = "orb_signal_manager"
 
-# fee model info, not include in config
+# fee model info
 fee_per_share = Decimal(str(0.005))
 minimum_fee_per_order = Decimal(str(1.0))
 maximum_fee_ratio_per_order = Decimal(str(0.01))
-target_price_minimum = Decimal(str(10.0))
-
 
 # trading rule
+balance = Decimal(str(VENUE_CONFIG.starting_balances))
 # position
 open_position_maximum = Decimal(str(2.0))
 # order
 trading_bar_type = "1-MINUTE-LAST-EXTERNAL"
 stop_price_buffer = Decimal(str(0.02))
-order_value_maximum = Decimal(str(800.0))
 order_size_multiplier_ratio = Decimal(str(0.5))
 order_size_multiplier_trigger_loss_ratio = Decimal(str(0.5))
 # risk
-balance = Decimal(str(VENUE_CONFIG.starting_balances))
-tradable_balance_ratio = Decimal(str(0.8))
-tradable_balance = balance * tradable_balance_ratio
+tradable_balance_ratio = Decimal(str(0.8))  # risk
+tradable_balance = balance * tradable_balance_ratio  # risk
+order_value_maximum = tradable_balance / open_position_maximum  # order
 intraday_risk_ratio = Decimal(str(0.02))
 intraday_loss_maximum = balance * intraday_risk_ratio
+target_profit_minimum = Decimal(str(10.0))
 cost_ratio_maximum = Decimal(str(0.1))
 cost_estimated_per_trade = (
     minimum_fee_per_order
-    if (order_value_maximum / target_price_minimum) * fee_per_share
+    if (order_value_maximum / target_profit_minimum) * fee_per_share
     < maximum_fee_ratio_per_order * order_value_maximum
     else maximum_fee_ratio_per_order * order_value_maximum
 ) * Decimal(str(2.0))
@@ -207,6 +227,17 @@ market_close_at = datetime.time(16, 0, 0)
 trading_start_at = datetime.time(10, 30, 0)
 forced_close_at = datetime.time(15, 30, 0)
 # rules
+portfolio_info = PortfolioInfo(
+    venue=Venue(VENUE_CONFIG.name),
+    currency=Currency.from_str(VENUE_CONFIG.base_currency),
+    balance=balance,
+)
+# fee model info
+fee_model_info = FeeModelInfo(
+    fee_per_share=fee_per_share,
+    minimum_fee_per_order=minimum_fee_per_order,
+    maximum_fee_ratio_per_order=maximum_fee_ratio_per_order,
+)
 order_rule: OrderRules = OrderRules(
     trading_bar_type=trading_bar_type,
     stop_price_buffer=stop_price_buffer,
@@ -220,11 +251,11 @@ position_rule: PositionRules = PositionRules(
     open_position_maximum=open_position_maximum,
 )
 risk_rule: RiskRules = RiskRules(
-    balance=balance,
     tradable_balance_ratio=tradable_balance_ratio,
     tradable_balance=tradable_balance,
     intraday_risk_ratio=intraday_risk_ratio,
     intraday_loss_maximum=intraday_loss_maximum,
+    target_profit_minimum=target_profit_minimum,
     cost_ratio_maximum=cost_ratio_maximum,
     cost_estimated_per_trade=cost_estimated_per_trade,
     cost_efficiency_value_minimum=cost_efficiency_value_minimum,
@@ -237,16 +268,15 @@ session_rule: SessionRule = SessionRule(
     trading_start_at=trading_start_at,
     forced_close_at=forced_close_at,
 )
+trading_rule_manager = "orb_trading_rule_manager"
+# cnadidate
+candidate_manager = "orb_candidate_manager"
 # order
 order_validator = "orb_long_order_validator"
 order_composer = "orb_order_composer"
-order_type = "bracket"
-candidate_manager = "orb_candidate_manager"
-position_manager = "orb_position_manager"
+# position
+position_evaluator = "orb_position_evaluator"
 # session
-name = "test_backtesting"
-order_config_factory = "orb_long_bracket_order_config_factory"
-order_type = "bracket"
 
 # engine
 engine = BacktestEngine(
@@ -263,6 +293,8 @@ engine = BacktestEngine(
 
 # venue
 venue_config = VENUE_CONFIG
+venue_name = venue_config.name
+venue_currency = venue_config.base_currency
 venue_config.fee_model_path = "fee:IbkrTieredFeeModel"
 venue_config.fee_model_config_path = "fee:IbkrTieredFeeConfig"
 backtest_venue_config: BacktestVenueConfig = venue_config.to_backtest_venue_config()
@@ -302,6 +334,7 @@ engine.add_venue(
 engine_start_time = datetime.datetime(2019, 12, 1, 0, 0, 0)
 warmup_data_start_time = engine_start_time + datetime.timedelta(days=-5)
 data_end_time = datetime.datetime(2019, 12, 5, 17, 0, 0)
+snapshot_time: datetime.time = datetime.time(10, 30, 0)
 catalog_path = NAUTILUS_CONFIG.catalog_path
 catalog = ParquetDataCatalog(catalog_path)
 r = duckdb.sql(
@@ -313,7 +346,6 @@ r = duckdb.sql(
     ],
 ).df()
 symbols = r["symbol"].to_list()
-# symbols = ["AGNC", "B", "CNO"]
 symbols = ["ANF", "CMC"]
 # preparing bar type
 # bar type information
@@ -388,8 +420,10 @@ for ins in instruments:
 
 engine.add_data(bars_1_min)
 engine.add_data(bars_1_day)
+# actor config
+actor_name = "actor_test_backtesting"
 actor_config = ConsolidationAndBreakoutIndicatorManageActorConfig(
-    name=name,
+    name=actor_name,
     warmup_data_start_datetime=warmup_data_start_time,
     data_start_datetime=engine_start_time,
     bar_types=bar_types,
@@ -398,27 +432,37 @@ actor_config = ConsolidationAndBreakoutIndicatorManageActorConfig(
     watchlist_manager="orb_watchlist_manager",
 )
 actor = ConsolidationAndBreakoutIndicatorManageActor(config=actor_config)
+
+# strategy_config
+strategy_name = "strategy_test_backtesting"
 strategy_config = ConsolidationAndBreakoutConfig(
-    name=name,
+    name=strategy_name,
+    # portfolio info
+    # data
     warmup_data_start_datetime=warmup_data_start_time,
     data_start_datetime=engine_start_time,
-    indicator_meta_set=[intraday_1_min],
-    order_rule=order_rule,
     bar_types=bar_types,
+    # trading rule
+    portfolio_info=portfolio_info,
+    fee_model_info=fee_model_info,
+    order_rule=order_rule,
     position_rule=position_rule,
     risk_rule=risk_rule,
     session_rule=session_rule,
-    order_config_factory=order_config_factory,
-    order_type=order_type,
-    order_validator=order_validator,
-    order_composer=order_composer,
-    signal_meta_set=[orb_entry_signal],
+    trading_rule_manager=trading_rule_manager,
+    # candidate
+    candidate_manager=candidate_manager,
+    # signal
+    signal_meta_set=[orb_entry_signal, orb_exit_signal],
     signal_aggregation_method=signal_aggregation_method,
     signal_manager=signal_manager,
-    venue_currency_pair={"venue": "SIM", "currency": "USD"},
-    candidate_manager=candidate_manager,
+    # ranking
     ranking_method=ranking_method,
-    position_manager=position_manager,
+    # order
+    order_validator=order_validator,
+    order_composer=order_composer,
+    # position evaluator
+    position_evaluator=position_evaluator,
 )
 strategy = ConsolidationAndBreakout(
     config=strategy_config, watchlist_manager_provider=actor

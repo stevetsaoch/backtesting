@@ -16,7 +16,7 @@ from protocols.provider import (
 )
 
 from order.order import OrderTicket, OrderState, OrderRole
-from schemas import TradingRulesMutable
+from trading_rule_manager import TradingRulesMutable
 
 
 class OrderTicketGroup(BaseModel):

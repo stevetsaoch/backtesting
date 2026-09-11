@@ -4,12 +4,13 @@ from nautilus_trader.model.enums import PositionSide, OrderSide
 from nautilus_trader.model import Position, InstrumentId, ClientOrderId
 from nautilus_trader.model.orders import Order
 
-from schemas import TradingRulesMutable
-from trading_signal.signal import SignalManager, BaseSignal
+from trading_rule_manager import TradingRulesMutable
+from trading_signal.signal import BaseSignal
+from trading_signal.signal_manager import SignalManager
 from protocols.provider import ClockProvider, CacheInfoProvider
 
 
-class PositionManager(ABC):
+class PositionEvaluator(ABC):
     """
     Monitoring on position to decide whether submit an order to close the position base on signal
     """
@@ -26,11 +27,16 @@ class PositionManager(ABC):
         self._trading_rule: TradingRulesMutable = trading_rule
         self._clock_provider = clock_provider
         self._is_forced_close_triggered: bool = False
+        self._is_exit_signal_triggered: bool = False
         self._client_order_ids: list[ClientOrderId] = []
 
     @property
     @abstractmethod
     def client_order_ids(self) -> list[ClientOrderId]: ...
+
+    @property
+    @abstractmethod
+    def is_exit_signal_triggered(self) -> bool: ...
 
     @property
     @abstractmethod
@@ -52,13 +58,18 @@ class PositionManager(ABC):
     def _get_open_orders(self) -> list[Order]: ...
 
     @abstractmethod
+    def _get_exit_signals(
+        self, client_order_id: ClientOrderId
+    ) -> list[BaseSignal] | None: ...
+
+    @abstractmethod
     def _get_signals(self, instrument_id: InstrumentId) -> list[BaseSignal] | None: ...
 
     @abstractmethod
     def _check_forced_close_time_trigger(self) -> bool: ...
 
 
-class ORBPositionManager(PositionManager):
+class ORBPositionEvaluator(PositionEvaluator):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._position_side = PositionSide.LONG
@@ -71,6 +82,10 @@ class ORBPositionManager(PositionManager):
     @property
     def is_forced_close_triggered(self) -> bool:
         return self._is_forced_close_triggered
+
+    @property
+    def is_exit_signal_triggered(self) -> bool:
+        return self._is_exit_signal_triggered
 
     def evaluate_forced_close_triggered(self) -> bool:
         if (
@@ -88,7 +103,7 @@ class ORBPositionManager(PositionManager):
         open_positions = self._get_open_positions()
 
         for p in open_positions:
-            sigs = self._get_signals(p.instrument_id)
+            sigs = self._get_exit_signals(p.opening_order_id)
             if sigs is None:
                 return False
 
@@ -99,12 +114,13 @@ class ORBPositionManager(PositionManager):
                     self._client_order_ids.append(p.opening_order_id)
 
         if len(self._client_order_ids) > 0:
-            return True
-        else:
-            return False
+            self._is_exit_signal_triggered = True
+
+        return self._is_exit_signal_triggered
 
     def reset(self):
         self._is_forced_close_triggered: bool = False
+        self._is_exit_signal_triggered: bool = False
         self._client_order_ids: list[ClientOrderId] = []
 
     def _get_open_positions(self):
@@ -119,12 +135,19 @@ class ORBPositionManager(PositionManager):
 
     def _get_signals(self, instrument_id: InstrumentId):
         try:
-            sigs = self._signal_manager.signal_map[instrument_id].signals
+            sigs = self._signal_manager.entry_signal_map[instrument_id].signals
             return sigs
         except:
             pass
         finally:
             return
+
+    def _get_exit_signals(self, client_order_id: ClientOrderId):
+        try:
+            sigs = self._signal_manager.exit_signal_map[client_order_id].signals
+            return sigs
+        except:
+            pass
 
     def _check_forced_close_time_trigger(self):
         return (
@@ -133,4 +156,4 @@ class ORBPositionManager(PositionManager):
         )
 
 
-POSITION_MANAGER_REGISTRY = {"orb_position_manager": ORBPositionManager}
+POSITION_EVALUATOR_REGISTRY = {"orb_position_evaluator": ORBPositionEvaluator}

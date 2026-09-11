@@ -124,18 +124,9 @@ class ConsolidationAndBreakoutIndicatorManageActor(Actor, DailyResetMixin):
     def get_watchlist_manager(self) -> ORBSnapshotIntradayInfoProvider:
         return self._watchlist_manager
 
-    def _check_and_reset(self, event) -> bool:
-        date = self.clock.utc_now().date()
-        if self._current_session_date is None:
-            self._current_session_date = date
-            return False
-
-        if date != self._current_session_date:
-            self._current_session_date = date
-            for cb in self._reset_callbacks:
-                cb()
-            return True
-        return False
+    def _check_and_reset(self, event):
+        for cb in self._reset_callbacks:
+            cb()
 
     def _on_daily_reset(self):
         self._current_session_time = None

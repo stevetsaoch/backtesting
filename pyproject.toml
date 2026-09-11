@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "dateutils>=0.6.12",
+    "devtools>=0.12.2",
     "duckdb>=1.5.4",
     "fastparquet>=2026.5.0",
     "ib-async>=2.1.0",

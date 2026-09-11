@@ -10,7 +10,7 @@ from nautilus_trader.core.datetime import unix_nanos_to_dt
 from nautilus_trader.model import InstrumentId, Bar, BarType
 
 
-from schemas import TradingRulesMutable
+from trading_rule_manager import TradingRulesMutable
 from protocols.provider import ClockProvider, CacheInfoProvider
 from order.order import OrderTicket
 
