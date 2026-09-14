@@ -7,8 +7,9 @@ from nautilus_trader.model import InstrumentId, BarType, Bar
 from nautilus_trader.indicators.base import Indicator
 
 from mixin import DailyResetMixin
-from watchlist import WATCHLIST_MANAGER_REGISTRY
-from protocols.provider import ORBSnapshotIntradayInfoProvider
+from event_manager import EventManager
+from watchlist.watchlist_manager import WATCHLIST_MANAGER_REGISTRY
+from watchlist.interfaces import WatchlistManagerProvider, ORBWatchlistManagerInterface
 from indicator.indicator import IndicatorMeta, INDICATOR_REGISTRY
 
 
@@ -24,30 +25,38 @@ class ConsolidationAndBreakoutIndicatorManageActorConfig(ActorConfig, frozen=Tru
     watchlist_manager: str
 
 
-class ConsolidationAndBreakoutIndicatorManageActor(Actor, DailyResetMixin):
-    def __init__(self, config: ConsolidationAndBreakoutIndicatorManageActorConfig):
+class ConsolidationAndBreakoutIndicatorManageActor(
+    Actor, DailyResetMixin, WatchlistManagerProvider[ORBWatchlistManagerInterface]
+):
+    def __init__(
+        self,
+        config: ConsolidationAndBreakoutIndicatorManageActorConfig,
+        event_manager: EventManager,
+    ):
         super().__init__(config)
         self._indicator_instrument_map: dict[str, dict[InstrumentId, Indicator]] = (
             defaultdict(dict)
         )
         self._current_session_datetime: datetime.datetime | None = None
-        self._watchlist_manager = WATCHLIST_MANAGER_REGISTRY[
-            self.config.watchlist_manager
-        ](
-            indicator_meta_set=self.config.indicator_meta_set,
-            snapshot_time=self.config.snapshot_time,
-            indicator_instrument_map=self._indicator_instrument_map,
-        )
+        self._event_manager = event_manager
 
     def on_start(self):
-        self._init_daily_reset()
-        self._register_daily_reset(self._on_daily_reset)
-        self._register_daily_reset(self._watchlist_manager.reset)
-        self._register_indicator()
         for bts in self.config.bar_types.values():
             for bt in bts:
                 self.subscribe_bars(bt)
-        # reset
+
+        # watchlist manager
+        self._watchlist_manager: (
+            ORBWatchlistManagerInterface
+        ) = WATCHLIST_MANAGER_REGISTRY[self.config.watchlist_manager](
+            indicator_meta_set=self.config.indicator_meta_set,
+            snapshot_time=self.config.snapshot_time,
+            indicator_instrument_map=self._indicator_instrument_map,
+            event_manager=self._event_manager,
+            clock_provider=self.clock,
+        )
+
+        # event
         self.clock.set_timer(
             name="daily_reset",
             start_time=self.config.data_start_datetime.replace(
@@ -56,6 +65,11 @@ class ConsolidationAndBreakoutIndicatorManageActor(Actor, DailyResetMixin):
             interval=datetime.timedelta(days=1),
             callback=self._check_and_reset,
         )
+
+        # register reset
+        self._init_daily_reset()
+        self._register_daily_reset(self._watchlist_manager.reset)
+        self._register_indicator()
 
     def on_bar(self, bar: Bar):
         current_datetime = self.clock.utc_now()
@@ -76,7 +90,6 @@ class ConsolidationAndBreakoutIndicatorManageActor(Actor, DailyResetMixin):
 
     def on_stop(self):
         print(self._indicator_instrument_map)
-        pass
 
     def _post_on_bar(self, event):
         """
@@ -121,7 +134,7 @@ class ConsolidationAndBreakoutIndicatorManageActor(Actor, DailyResetMixin):
                     self.register_indicator_for_bars(bt, t_ind)
 
     # provider method
-    def get_watchlist_manager(self) -> ORBSnapshotIntradayInfoProvider:
+    def get_watchlist_manager(self) -> ORBWatchlistManagerInterface:
         return self._watchlist_manager
 
     def _check_and_reset(self, event):

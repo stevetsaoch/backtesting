@@ -1,3 +1,4 @@
+from typing import Generic, Literal
 from decimal import Decimal
 from pydantic import BaseModel
 from abc import ABC, abstractmethod
@@ -8,15 +9,25 @@ from nautilus_trader.model.enums import OrderSide, OrderType, TimeInForce, Posit
 from nautilus_trader.model.objects import Quantity
 from nautilus_trader.core.datetime import unix_nanos_to_dt
 
+from watchlist.interfaces import (
+    T_WL_CO,
+    ORBWatchlistManagerInterface,
+)
 from protocols.provider import (
-    ORBSnapshotIntradayInfoProvider,
     ClockProvider,
     OrderFactoryMethodProvider,
     CacheInfoProvider,
 )
+from event_manager import EventManager
+from schemas import Event, EventType, EventPayload
 
 from order.order import OrderTicket, OrderState, OrderRole
 from trading_rule_manager import TradingRulesMutable
+
+
+# event
+class ComposeOrderTickEvent(Event):
+    event_type: Literal[EventType.COMPOSE_ORDER_TICKET] = EventType.COMPOSE_ORDER_TICKET
 
 
 class OrderTicketGroup(BaseModel):
@@ -24,13 +35,23 @@ class OrderTicketGroup(BaseModel):
     child: OrderTicket
 
 
-class OrderTicketComposer(ABC):
+class OrderTicketComposer(ABC, Generic[T_WL_CO]):
     def __init__(
         self,
         trading_rule: TradingRulesMutable,
+        info_provider: T_WL_CO,
+        clock_provider: ClockProvider,
+        order_factory_method_provider: OrderFactoryMethodProvider,
+        cache_info_provider: CacheInfoProvider,
+        event_manager: EventManager,
     ):
-        self._order_ticket_groups: list[OrderTicketGroup] = []
         self._trading_rule = trading_rule
+        self._order_ticket_groups: list[OrderTicketGroup] = []
+        self._info_provider = info_provider
+        self._clock_provider = clock_provider
+        self._order_factory_method_provider = order_factory_method_provider
+        self._cache_info_provider = cache_info_provider
+        self._event_manager = event_manager
 
     @property
     @abstractmethod
@@ -49,13 +70,9 @@ class OrderTicketComposer(ABC):
     def reset(self) -> None: ...
 
 
-class ORBOrderTicketComposer(OrderTicketComposer):
+class ORBOrderTicketComposer(OrderTicketComposer[ORBWatchlistManagerInterface]):
     def __init__(
         self,
-        orb_snapshot_intraday_info_provider: ORBSnapshotIntradayInfoProvider,
-        clock_provider: ClockProvider,
-        order_factory_method_provider: OrderFactoryMethodProvider,
-        cache_info_provider: CacheInfoProvider,
         *args,
         **kwargs,
     ):
@@ -64,10 +81,6 @@ class ORBOrderTicketComposer(OrderTicketComposer):
         self._position_side = PositionSide.LONG
         self._parent_order_ticket: OrderTicket
         self._child_order_ticket: OrderTicket
-        self._orb_snapshot_intraday_info_provider = orb_snapshot_intraday_info_provider
-        self._clock_provider = clock_provider
-        self._order_factory_method_provider = order_factory_method_provider
-        self._cache_info_provider = cache_info_provider
 
     @property
     def order_ticket_groups(self):
@@ -99,13 +112,6 @@ class ORBOrderTicketComposer(OrderTicketComposer):
         self._child_order_ticket.quantity = self._cache_info_provider.instrument(
             candidates
         ).make_qty(quantity)
-        # referencing
-        self._parent_order_ticket.order_child_order_id = (
-            self._child_order_ticket.order_client_order_id
-        )
-        self._child_order_ticket.order_parent_order_id = (
-            self._parent_order_ticket.order_client_order_id
-        )
 
         # order group
         order_ticket_group = OrderTicketGroup(
@@ -167,6 +173,18 @@ class ORBOrderTicketComposer(OrderTicketComposer):
             otg.parent.order_child_order_id = c_order.client_order_id
             otg.parent.order_state = OrderState.CREATED
             otg.parent.order_created_at = self._clock_provider.utc_now()
+            # event parent
+            event_p = ComposeOrderTickEvent(
+                created_at=self._clock_provider.utc_now().replace(tzinfo=None),
+                payload=EventPayload(result=otg.parent.model_dump()),
+            )
+            self._event_manager.add(event_p)
+            # event child
+            event_c = ComposeOrderTickEvent(
+                created_at=self._clock_provider.utc_now().replace(tzinfo=None),
+                payload=EventPayload(result=otg.child.model_dump()),
+            )
+            self._event_manager.add(event_c)
 
     def _calculate_quantity(self, instrument_id: InstrumentId) -> Quantity:
         bar = self._get_last_bar(instrument_id)
@@ -281,18 +299,10 @@ class ORBOrderTicketComposer(OrderTicketComposer):
         return bar
 
     def _get_intraday_high(self, instrument_id: InstrumentId) -> Decimal:
-        return Decimal(
-            self._orb_snapshot_intraday_info_provider.get_snapshot_intraday_high(
-                instrument_id
-            )
-        )
+        return Decimal(self._info_provider.get_snapshot_intraday_high(instrument_id))
 
     def _get_intraday_low(self, instrument_id: InstrumentId) -> Decimal:
-        return Decimal(
-            self._orb_snapshot_intraday_info_provider.get_snapshot_intraday_low(
-                instrument_id
-            )
-        )
+        return Decimal(self._info_provider.get_snapshot_intraday_low(instrument_id))
 
     def _get_intraday_realized_profit(self) -> Decimal:
         total = Decimal("0")
@@ -387,8 +397,3 @@ class ForcedCloseOrderComposer:
 ORDER_COMPOSER_REGISTRY: dict[str, type[OrderTicketComposer]] = {
     "orb_order_composer": ORBOrderTicketComposer
 }
-
-
-class OrderFactory:
-    def __init__(self):
-        pass

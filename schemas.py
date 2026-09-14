@@ -477,105 +477,55 @@ class DataConfig(BaseModel):
 
 class EventType(str, enum.Enum):
     #
-    WARM_UP = "warm_up"
-    # screening dataframe and marking the symbol
-    SCREENING = "screening"
-    # ranking according to the given condition to support the decision.
-    RANKING = "ranking"
-    # building a watch list
-    SELECT_WATCH_LIST = "selecting_watch_list"
-    # selecting the candidates which entry signal pass the threshold
-    SELECT_CANDIDATE = "selecting_candidate"
-    # ranking candidate to find the candidate which has highest metric
-    RANKING_CANDIDATE = "ranking_candidate"
-    #
+    RECORD_CONDITION = "record_condition"
+    RECORD_SIGNAL_RAW_DATA = "record_signal_raw_data"
+    CREATE_SIGNAL_RAW_DATA = "create_signal_raw_data"
+    CREATE_WATCHLIST = "create_watchlist"
+    FORCED_CLOSE_TRIGGERED = "forced_close_triggered"
+    EXIT_SIGNAL_TRIGGERED = "exit_signal_triggered"
+    RANK_CANDIDATE = "rank_candidate"
     PRE_ORDER_VALIDATION = "pre_order_validation"
-    #
     POST_ORDER_VALIDATION = "post_order_validation"
+    COMPOSE_ORDER_TICKET = "compose_order_ticket"
+    REGISTER_ORDER_TICKET = "register_order_ticket"
+
+    UPDATE_ON_POST_VALIDATION_FAILED = "update_on_post_validation_failed"
+    UPDATE_ON_POST_VALIDATION_SUCCEED = "update_on_post_validation_succeed"
+    # order
+    UPDATE_ON_ORDER_SUBMITTED = "update_on_order_submitted"
+    UPDATE_ON_ORDER_ACCEPTED = "update_on_order_accepted"
+    UPDATE_ON_ORDER_FILLED = "update_on_order_filled"
+    UPDATE_ON_ORDER_PARTIALLY_FILLED = "update_on_order_partially_filled"
+    UPDATE_ON_ORDER_MODIFIED = "update_on_order_modified"
+    UPDATE_ON_ORDER_CANCELED = "update_on_order_canceled"
+    UPDATE_ON_ORDER_REJECTED = "update_on_order_rejected"
+    UPDATE_ON_ORDER_EXPIRED = "update_on_order_expired"
+    UPDATE_ON_POSITION_OPENED = "update_on_position_opened"
+    UPDATE_ON_POSITION_CLOSED = "update_on_position_closed"
     #
-    ORDER_TICKET_CREATED = "order_ticket_created"
-    #
-    ORDER_CREATED = "order_created"
-    #
-    ORDER_SUBMITTED = "order_submitted"
-    #
-    ORDER_FILLED = "order_filled"
-    #
-    ORDER_PARTIALLY_FILLED = "order_partially_filled"
-    #
-    ORDER_MODIFIED = "order_modified"
-    #
-    ORDER_CANCELED = "order_canceled"
-    #
-    ORDER_REJECTED = "order_rejected"
-    #
-    ORDER_EXPIRED = "order_expired"
-    #
-    MONITORING_POSITION = "monitoring_position"
-    #
-    TRIGGERED_EXIT_SIGNAL = "triggered_exit_signal"
-    #
-    ADJUSTED_POSITION = "adjusted_position"
-    #
-    CLOSED_POSITION = "closed_position"
+    RECORD_ORDER_TICKET = "record_order_ticket"
 
 
-class PreOrderValidationAction(str, enum.Enum):
-    SKIP = "skip"
-
-
-class PreOrderValidationReason(str, enum.Enum):
-    NO_CANDIDATE = "no candidate"
-    FAIL = "fail"
-
-
-class WatchListAction(str, enum.Enum):
-    ADD = "add"
-    SKIP = "skip"  # already included in the list, skipping the action
-    REMOVE = "remove"
-
-
-class WatchListActionReason(str, enum.Enum):
-    EXISTED = "existed"
-
-
-class CandidateAction(str, enum.Enum):
-    ADD = "add"
-    SKIP = "skip"  # already included in the list, skipping the action
-    REMOVE = "remove"
-
-
-class CandidateActionReason(str, enum.Enum):
-    EXISTED = "existed"
-    SIGNAL_INVALIDATED = "signal_invalidated"
-
-
-class EventPayloadField(str, enum.Enum):
-    FILE_PATH = "file_path"
-    SOURCE = "source"
-    CONDITION = "condition"
-    METHOD = "method"
-    ACTION = "action"
-    INVOLVED = "involved"
-    METRICS = "metrics"
-    REASON = "reason"
-    SNAPSHOT = "snapshot"
-    DESCRIPTION = "description"
-    CONFIG = "config"
-    DETAIL = "detail"
+class EventPayload(BaseModel):
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+    condition: str | dict | None = None
+    result: list | set | dict | bool | None = None
+    description: str | None = None
+    reference_file_name: str | None = None
+    reference_data: pd.DataFrame | None = None
 
 
 class Event(BaseModel):
     event_type: EventType
     created_at: datetime.datetime
-    payload: dict[EventPayloadField, str | int | float | dict | enum.Enum]
+    payload: EventPayload
 
     model_config = {"use_enum_values": True}
 
     @field_serializer("payload")
     def serialize_payload(self, payload, _info):
         out = {}
-        for k, v in payload.items():
+        for k, v in payload.model_dump().items():
             if isinstance(k, enum.Enum):
                 out[k.value] = v
             elif isinstance(k, str):
@@ -583,6 +533,10 @@ class Event(BaseModel):
             else:
                 out[str(k)] = v
         return out
+
+
+class RecordConditionEvent(Event):
+    event_type: Literal[EventType.RECORD_CONDITION] = EventType.RECORD_CONDITION
 
 
 # field can use as string to assign to variable

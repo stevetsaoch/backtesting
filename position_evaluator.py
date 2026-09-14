@@ -1,3 +1,4 @@
+from typing import Literal
 from abc import ABC, abstractmethod
 
 from nautilus_trader.model.enums import PositionSide, OrderSide
@@ -8,6 +9,20 @@ from trading_rule_manager import TradingRulesMutable
 from trading_signal.signal import BaseSignal
 from trading_signal.signal_manager import SignalManager
 from protocols.provider import ClockProvider, CacheInfoProvider
+from event_manager import EventManager
+from schemas import Event, EventType, EventPayload, RecordConditionEvent
+
+
+class ForcedCloseTriggeredEvent(Event):
+    event_type: Literal[EventType.FORCED_CLOSE_TRIGGERED] = (
+        EventType.FORCED_CLOSE_TRIGGERED
+    )
+
+
+class ExitSignalTriggeredEvent(Event):
+    event_type: Literal[EventType.EXIT_SIGNAL_TRIGGERED] = (
+        EventType.EXIT_SIGNAL_TRIGGERED
+    )
 
 
 class PositionEvaluator(ABC):
@@ -21,7 +36,9 @@ class PositionEvaluator(ABC):
         signal_manager: SignalManager,
         cache_info_provider: CacheInfoProvider,
         clock_provider: ClockProvider,
+        event_manager: EventManager,
     ):
+        self._event_mannger: EventManager = event_manager
         self._signal_manager: SignalManager = signal_manager
         self._cache_info_provider: CacheInfoProvider = cache_info_provider
         self._trading_rule: TradingRulesMutable = trading_rule
@@ -74,6 +91,35 @@ class ORBPositionEvaluator(PositionEvaluator):
         super().__init__(*args, **kwargs)
         self._position_side = PositionSide.LONG
         self._order_side = OrderSide.BUY
+        # forced close condition
+        event = RecordConditionEvent(
+            created_at=self._clock_provider.utc_now().replace(tzinfo=None),
+            payload=EventPayload(
+                condition={
+                    "operator": "gt",
+                    "threshold": self._trading_rule.session_rule.forced_close_at.isoformat(),
+                },
+                description="forced close trigger condition",
+            ),
+        )
+        self._event_mannger.add(event)
+        # exit signal condition
+        event = RecordConditionEvent(
+            created_at=self._clock_provider.utc_now().replace(tzinfo=None),
+            payload=EventPayload(
+                condition={
+                    s.name: {
+                        cfg.name: {"operator": cfg.operator, "threshold": cfg.threshold}
+                        for cfg in s.factor_configs
+                        if cfg.operator is not None and cfg.threshold is not None
+                    }
+                    for s in self._signal_manager.signal_meta_set
+                    if s.is_exit_signal
+                },
+                description="exit signal condition",
+            ),
+        )
+        self._event_mannger.add(event)
 
     @property
     def client_order_ids(self):
@@ -97,6 +143,15 @@ class ORBPositionEvaluator(PositionEvaluator):
                 oop.opening_order_id for oop in self._get_open_positions()
             ]
             self._client_order_ids += open_position_client_order_ids
+        # event
+        if self._is_forced_close_triggered:
+            event = ForcedCloseTriggeredEvent(
+                created_at=self._clock_provider.utc_now().replace(tzinfo=None),
+                payload=EventPayload(
+                    result=self._is_forced_close_triggered,
+                ),
+            )
+            self._event_mannger.add(event)
         return self._is_forced_close_triggered
 
     def evaluate_exit_signal_triggered(self):
@@ -111,6 +166,13 @@ class ORBPositionEvaluator(PositionEvaluator):
                 if not s.is_exit_signal:
                     continue
                 if s.signal:
+                    event = ExitSignalTriggeredEvent(
+                        created_at=self._clock_provider.utc_now().replace(tzinfo=None),
+                        payload=EventPayload(
+                            result=s.metric,
+                        ),
+                    )
+                    self._event_mannger.add(event)
                     self._client_order_ids.append(p.opening_order_id)
 
         if len(self._client_order_ids) > 0:

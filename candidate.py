@@ -1,15 +1,28 @@
 import pandas as pd
-from typing import Generic
+from typing import Generic, Literal
 from abc import ABC, abstractmethod
 
 from nautilus_trader.model import InstrumentId
 
+from protocols.provider import ClockProvider
 from trading_signal.signal_manager import InstrumentSignal, SIGNAL_MANAGER
 from trading_signal.ranking import (
     CANDIDATE_RANKING_METHOD,
     SignalResultFlat,
     RankingMetric,
 )
+from event_manager import EventManager
+from schemas import Event, EventType, EventPayload
+
+
+class RankCandidateEvent(Event):
+    event_type: Literal[EventType.RANK_CANDIDATE] = EventType.RANK_CANDIDATE
+
+
+class SignalRawDataEvent(Event):
+    event_type: Literal[EventType.CREATE_SIGNAL_RAW_DATA] = (
+        EventType.CREATE_SIGNAL_RAW_DATA
+    )
 
 
 class CandidateManager(ABC, Generic[SIGNAL_MANAGER, CANDIDATE_RANKING_METHOD]):
@@ -17,6 +30,8 @@ class CandidateManager(ABC, Generic[SIGNAL_MANAGER, CANDIDATE_RANKING_METHOD]):
         self,
         signal_manager: SIGNAL_MANAGER,
         candidate_ranking_method: CANDIDATE_RANKING_METHOD,
+        event_manager: EventManager,
+        clock_provider: ClockProvider,
     ):
         self._signal_manager: SIGNAL_MANAGER = signal_manager
         self._candidate_ranking_method: CANDIDATE_RANKING_METHOD = (
@@ -26,6 +41,8 @@ class CandidateManager(ABC, Generic[SIGNAL_MANAGER, CANDIDATE_RANKING_METHOD]):
         self._signal_result_flat: pd.DataFrame = pd.DataFrame()
         self._ranking_result: RankingMetric = RankingMetric()
         self._ranked_candidate: list[InstrumentId] = []
+        self._event_manager = event_manager
+        self._clock_provider = clock_provider
 
     @property
     @abstractmethod
@@ -35,9 +52,8 @@ class CandidateManager(ABC, Generic[SIGNAL_MANAGER, CANDIDATE_RANKING_METHOD]):
     @abstractmethod
     def ranking_result(self) -> RankingMetric: ...
 
-    @property
     @abstractmethod
-    def ranked_candidate(self) -> list[InstrumentId]: ...
+    def rank_candidate(self) -> list[InstrumentId]: ...
 
     @abstractmethod
     def reset(self) -> None: ...
@@ -64,14 +80,32 @@ class ORBCandidateManager(CandidateManager):
     def candidate(self) -> set[InstrumentId]:
         return self._candidate
 
-    @property
-    def ranked_candidate(self) -> list[InstrumentId]:
+    def rank_candidate(self) -> list[InstrumentId]:
         self._select_candidate(self._signal_manager.entry_signal_map)
         self._flating_signals_result()
         self._ranking_candidate()
         self._ranked_candidate = [
             instrument_id for instrument_id in self._ranking_result.final_scores.keys()
         ]
+        if len(self._ranked_candidate) > 0:
+            event = RankCandidateEvent(
+                created_at=self._clock_provider.utc_now().replace(tzinfo=None),
+                payload=EventPayload(
+                    result=self._ranked_candidate,
+                ),
+            )
+            self._event_manager.add(event)
+            # signal raw data event
+            self._signal_result_flat["datetime"] = (
+                self._clock_provider.utc_now().replace(tzinfo=None)
+            )
+            event = SignalRawDataEvent(
+                created_at=self._clock_provider.utc_now().replace(tzinfo=None),
+                payload=EventPayload(
+                    result={}, reference_data=self._signal_result_flat
+                ),
+            )
+            self._event_manager.add(event)
         return self._ranked_candidate
 
     def reset(self):

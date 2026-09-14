@@ -1,5 +1,6 @@
 import datetime
 import pandas as pd
+from typing import Literal
 from dataclasses import dataclass
 from abc import ABC, abstractmethod
 from collections import defaultdict
@@ -7,8 +8,16 @@ from collections import defaultdict
 from nautilus_trader.model import InstrumentId
 from nautilus_trader.indicators.base import Indicator
 
+from protocols.provider import ClockProvider
 from indicator.indicator import IndicatorMeta
 from indicator.field import IndicatorFieldConfig, TYPE_REGISTRY
+from event_manager import EventManager
+from schemas import Event, EventType, EventPayload
+
+
+# event
+class WatchlistCreatedEvent(Event):
+    event_type: Literal[EventType.CREATE_WATCHLIST] = EventType.CREATE_WATCHLIST
 
 
 @dataclass(frozen=True)
@@ -26,6 +35,8 @@ class WatchListManager(ABC):
         indicator_meta_set: list[IndicatorMeta],
         snapshot_time: datetime.time,
         indicator_instrument_map: dict[str, dict[InstrumentId, Indicator]],
+        clock_provider: ClockProvider,
+        event_manager: EventManager,
     ):
         self._field_configs: dict[str, IndicatorFieldConfig] = {
             f.name: f
@@ -40,46 +51,39 @@ class WatchListManager(ABC):
         self._is_watchlist_ready: bool = False
         self._data: pd.DataFrame = pd.DataFrame()
         self._watchlist: list[InstrumentId] = []
+        self._clock_provider = clock_provider
+        self._event_manager = event_manager
 
     @property
     @abstractmethod
-    def is_watchlist_ready(self) -> bool:
-        pass
+    def is_watchlist_ready(self) -> bool: ...
 
     @property
     @abstractmethod
-    def data(self) -> pd.DataFrame:
-        pass
+    def data(self) -> pd.DataFrame: ...
 
     @property
     @abstractmethod
-    def snapshot_data(self) -> pd.DataFrame:
-        pass
+    def snapshot_data(self) -> pd.DataFrame: ...
 
     @property
     @abstractmethod
-    def watchlist(self) -> list[InstrumentId]:
-        pass
+    def watchlist(self) -> list[InstrumentId]: ...
 
     @abstractmethod
-    def update(self, time: datetime.time):
-        pass
+    def update(self, time: datetime.time): ...
 
     @abstractmethod
-    def reset(self):
-        pass
+    def reset(self): ...
 
     @abstractmethod
-    def _build_watchlist(self) -> list[InstrumentId]:
-        pass
+    def _build_watchlist(self) -> list[InstrumentId]: ...
 
     @abstractmethod
-    def _build_dataframe(self) -> pd.DataFrame:
-        pass
+    def _build_dataframe(self) -> pd.DataFrame: ...
 
     @abstractmethod
-    def _build_empty_dataframe(self) -> pd.DataFrame:
-        pass
+    def _build_empty_dataframe(self) -> pd.DataFrame: ...
 
 
 class ORBWatchListManager(WatchListManager):
@@ -110,12 +114,42 @@ class ORBWatchListManager(WatchListManager):
             self._watchlist = self._build_watchlist()
             self._snapshot_data = self._build_dataframe()
             self._is_watchlist_ready = True
+            # event
+            event = self._create_watchlist_event(
+                self._snapshot_data, is_snapshot=True, result=self._watchlist
+            )
+            self._event_manager.add(event)
 
     def reset(self):
         self._snapshot_data: pd.DataFrame = pd.DataFrame()
         self._is_watchlist_ready: bool = False
         self._data: pd.DataFrame = pd.DataFrame()
         self._watchlist: list[InstrumentId] = []
+
+    def _create_watchlist_event(
+        self, data: pd.DataFrame, is_snapshot: bool, result: list[InstrumentId]
+    ):
+        condition = {
+            cfg.name: {"operator": cfg.operator, "threshold": cfg.threshold}
+            for cfg in self._field_configs.values()
+            if (cfg.operator is not None and cfg.threshold is not None)
+        }
+        file_name = (
+            "snapshot_indicator_data" if is_snapshot else "latest_indicator_data"
+        )
+        result = [str(r) for r in result]
+        payload = EventPayload(
+            condition=condition,
+            result=result,
+            reference_file_name=file_name,
+            reference_data=data,
+        )
+
+        event = WatchlistCreatedEvent(
+            created_at=self._clock_provider.utc_now().replace(tzinfo=None),
+            payload=payload,
+        )
+        return event
 
     def _build_watchlist(self) -> list[InstrumentId]:
         wld = defaultdict(list)

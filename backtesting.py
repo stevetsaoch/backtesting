@@ -1,11 +1,12 @@
-import datetime
 import duckdb
+import datetime
 from decimal import Decimal
 from nautilus_trader.persistence.catalog import ParquetDataCatalog
 from nautilus_trader.backtest.models import FillModel, LatencyModel
 from nautilus_trader.model.objects import Currency, Money
+from nautilus_trader.model.identifiers import Venue
 from nautilus_trader.model import InstrumentId, BarType
-from nautilus_trader.model.enums import OmsType, AccountType
+from nautilus_trader.model.enums import OmsType, AccountType, BarAggregation
 from nautilus_trader.backtest.engine import BacktestEngine
 from nautilus_trader.config import (
     BacktestEngineConfig,
@@ -13,6 +14,21 @@ from nautilus_trader.config import (
     LoggingConfig,
     BacktestVenueConfig,
 )
+
+from util import load_class_from_path
+from config import NAUTILUS_CONFIG, VENUE_CONFIG
+from indicator.field import IndicatorFieldConfig
+from indicator.indicator import IndicatorMeta
+from trading_signal.factor import FactorConfig
+from trading_signal.signal import SignalMeta
+from event_manager import EventManager
+
+from actor.intraday import (
+    ConsolidationAndBreakoutIndicatorManageActor,
+    ConsolidationAndBreakoutIndicatorManageActorConfig,
+)
+from strategy.intraday import ConsolidationAndBreakout, ConsolidationAndBreakoutConfig
+
 from schemas import (
     Operator,
     NautilusInstrumentId,
@@ -30,21 +46,8 @@ from schemas import (
     RiskRules,
     SessionRule,
 )
-from nautilus_trader.model.enums import BarAggregation
-from nautilus_trader.model.identifiers import Venue
-from util import load_class_from_path
-from indicator.field import IndicatorFieldConfig
-from indicator.indicator import IndicatorMeta
-from trading_signal.factor import FactorConfig
-from trading_signal.signal import SignalMeta
-from config import NAUTILUS_CONFIG, VENUE_CONFIG
-from actor.intraday import (
-    ConsolidationAndBreakoutIndicatorManageActor,
-    ConsolidationAndBreakoutIndicatorManageActorConfig,
-)
-from strategy.intraday import ConsolidationAndBreakout, ConsolidationAndBreakoutConfig
 
-
+# indicator
 intraday_open = IndicatorFieldConfig(
     name="intraday_open",
     field_name="intraday_open",
@@ -168,7 +171,7 @@ orb_entry_signal = SignalMeta(
 one_hour_no_new_high = FactorConfig(
     name="one_hour_no_new_high",
     operator=Operator.GT,
-    threshold=0.0,
+    threshold=1.0,
     ascending=False,
     bar_buffer_size=1,
     bar_spec_requirement=f"1-{BarAggregation.MINUTE}",
@@ -190,20 +193,24 @@ ranking_method = "percentile"
 signal_aggregation_method = AggregationMethod.MINIMUM
 signal_manager = "orb_signal_manager"
 
+
+# trading rule
+
+balance = Decimal(str(VENUE_CONFIG.starting_balances))
 # fee model info
 fee_per_share = Decimal(str(0.005))
 minimum_fee_per_order = Decimal(str(1.0))
 maximum_fee_ratio_per_order = Decimal(str(0.01))
 
-# trading rule
-balance = Decimal(str(VENUE_CONFIG.starting_balances))
 # position
 open_position_maximum = Decimal(str(2.0))
+
 # order
 trading_bar_type = "1-MINUTE-LAST-EXTERNAL"
 stop_price_buffer = Decimal(str(0.02))
 order_size_multiplier_ratio = Decimal(str(0.5))
 order_size_multiplier_trigger_loss_ratio = Decimal(str(0.5))
+
 # risk
 tradable_balance_ratio = Decimal(str(0.8))  # risk
 tradable_balance = balance * tradable_balance_ratio  # risk
@@ -221,23 +228,27 @@ cost_estimated_per_trade = (
 cost_efficiency_value_minimum = cost_estimated_per_trade / cost_ratio_maximum
 risk_value_ratio_minimum = Decimal(str(0.005))
 risk_value_minimum = balance * risk_value_ratio_minimum
+
 # session
 market_open_at = datetime.time(9, 30, 0)
 market_close_at = datetime.time(16, 0, 0)
 trading_start_at = datetime.time(10, 30, 0)
 forced_close_at = datetime.time(15, 30, 0)
+
 # rules
 portfolio_info = PortfolioInfo(
     venue=Venue(VENUE_CONFIG.name),
     currency=Currency.from_str(VENUE_CONFIG.base_currency),
     balance=balance,
 )
+
 # fee model info
 fee_model_info = FeeModelInfo(
     fee_per_share=fee_per_share,
     minimum_fee_per_order=minimum_fee_per_order,
     maximum_fee_ratio_per_order=maximum_fee_ratio_per_order,
 )
+
 order_rule: OrderRules = OrderRules(
     trading_bar_type=trading_bar_type,
     stop_price_buffer=stop_price_buffer,
@@ -247,6 +258,7 @@ order_rule: OrderRules = OrderRules(
     * order_size_multiplier_trigger_loss_ratio,  # order_size_multiplier_trigger_loss_ratio * intraday_loss_limit, update frequence: daily
     order_size_multiplier_ratio=order_size_multiplier_ratio,
 )
+
 position_rule: PositionRules = PositionRules(
     open_position_maximum=open_position_maximum,
 )
@@ -262,18 +274,24 @@ risk_rule: RiskRules = RiskRules(
     risk_value_ratio_minimum=risk_value_ratio_minimum,
     risk_value_minimum=risk_value_minimum,
 )
+
 session_rule: SessionRule = SessionRule(
     market_open_at=market_open_at,
     market_close_at=market_close_at,
     trading_start_at=trading_start_at,
     forced_close_at=forced_close_at,
 )
+
+# trading rule
 trading_rule_manager = "orb_trading_rule_manager"
+
 # cnadidate
 candidate_manager = "orb_candidate_manager"
+
 # order
 order_validator = "orb_long_order_validator"
 order_composer = "orb_order_composer"
+
 # position
 position_evaluator = "orb_position_evaluator"
 # session
@@ -420,10 +438,16 @@ for ins in instruments:
 
 engine.add_data(bars_1_min)
 engine.add_data(bars_1_day)
+
+# event manager
+backtesting_name = "test_intraday"
+event_manager = EventManager(
+    root_path=NAUTILUS_CONFIG.record_path, backtesting_name=backtesting_name
+)
+
 # actor config
-actor_name = "actor_test_backtesting"
 actor_config = ConsolidationAndBreakoutIndicatorManageActorConfig(
-    name=actor_name,
+    name=backtesting_name,
     warmup_data_start_datetime=warmup_data_start_time,
     data_start_datetime=engine_start_time,
     bar_types=bar_types,
@@ -431,12 +455,14 @@ actor_config = ConsolidationAndBreakoutIndicatorManageActorConfig(
     snapshot_time=snapshot_time,
     watchlist_manager="orb_watchlist_manager",
 )
-actor = ConsolidationAndBreakoutIndicatorManageActor(config=actor_config)
+actor = ConsolidationAndBreakoutIndicatorManageActor(
+    config=actor_config, event_manager=event_manager
+)
+
 
 # strategy_config
-strategy_name = "strategy_test_backtesting"
 strategy_config = ConsolidationAndBreakoutConfig(
-    name=strategy_name,
+    name=backtesting_name,
     # portfolio info
     # data
     warmup_data_start_datetime=warmup_data_start_time,
@@ -465,7 +491,9 @@ strategy_config = ConsolidationAndBreakoutConfig(
     position_evaluator=position_evaluator,
 )
 strategy = ConsolidationAndBreakout(
-    config=strategy_config, watchlist_manager_provider=actor
+    config=strategy_config,
+    watchlist_manager_provider=actor,
+    event_manager=event_manager,
 )
 
 engine.add_actor(actor)

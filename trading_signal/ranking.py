@@ -4,7 +4,7 @@ from typing import TypeVar
 from collections import defaultdict
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_serializer
 
 from nautilus_trader.model import InstrumentId
 
@@ -63,6 +63,10 @@ class RankingMetric(BaseModel):
     signal_scores: dict = defaultdict()
     final_scores: dict = defaultdict()
 
+    @field_serializer("final_scores")
+    def _serialize_final_scores(self, v: dict) -> dict[str, float]:
+        return {str(k): val for k, val in v.items()}
+
 
 class CandidateRankingMethod(ABC):
     COL_INSTRUMENT = SignalResultFlat.instrument_id
@@ -86,6 +90,18 @@ class CandidateRankingMethod(ABC):
             self._build_signal_internal_aggregation_dict(signal_meta_set)
         )
         self._signal_aggregation_method = signal_aggregation_method
+
+    @property
+    @abstractmethod
+    def factor_ranking_condition(self) -> dict: ...
+
+    @property
+    @abstractmethod
+    def signal_internal_aggregation_condition(self) -> dict: ...
+
+    @property
+    @abstractmethod
+    def signal_aggregation_method(self) -> AggregationMethod: ...
 
     @abstractmethod
     def rank(self, df: pd.DataFrame) -> RankingMetric: ...
@@ -115,6 +131,18 @@ class PercentilRanking(CandidateRankingMethod):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._ranking_metric = RankingMetric()
+
+    @property
+    def factor_ranking_condition(self) -> dict:
+        return self._factor_ranking_dict
+
+    @property
+    def signal_internal_aggregation_condition(self) -> dict:
+        return self._signal_internal_aggregation_dict
+
+    @property
+    def signal_aggregation_method(self) -> AggregationMethod:
+        return self._signal_aggregation_method
 
     def rank(self, df: pd.DataFrame) -> RankingMetric:
         df[self.COL_FACTOR_RANKING] = df.groupby(

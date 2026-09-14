@@ -62,6 +62,10 @@ class BaseSignal(ABC):
     @abstractmethod
     def metric(self) -> dict[Any, Any]: ...
 
+    @property
+    @abstractmethod
+    def condition(self) -> dict[Any, Any]: ...
+
 
 class ORBEntrySignal(BaseSignal):
     def __init__(self, *args, **kwargs):
@@ -86,6 +90,16 @@ class ORBEntrySignal(BaseSignal):
             metric[f.name] = f.value
         return metric
 
+    @property
+    def condition(self):
+        condition = {}
+        {
+            cfg.name: {"operator": cfg.operator, "threshold": cfg.threshold}
+            for cfg in self.factor_configs
+            if cfg.operator is not None and cfg.threshold is not None
+        }
+        return condition
+
 
 class ORBExitSignal(BaseSignal):
     def __init__(self, *args, **kwargs):
@@ -109,6 +123,15 @@ class ORBExitSignal(BaseSignal):
         for f in self.factors:
             metric[f.name] = f.value
         return metric
+
+    @property
+    def condition(self):
+        condition = {
+            cfg.name: {"operator": cfg.operator, "threshold": cfg.threshold}
+            for cfg in self.factor_configs
+            if (cfg.operator is not None and cfg.threshold is not None)
+        }
+        return condition
 
 
 SIGNAL_REGISTRY: dict[str, type] = {

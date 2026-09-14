@@ -7,12 +7,24 @@ from collections import defaultdict
 
 from nautilus_trader.model.enums import OrderSide, PositionSide
 from nautilus_trader.core.datetime import unix_nanos_to_dt
-from nautilus_trader.model import InstrumentId, Bar, BarType
+from nautilus_trader.model import InstrumentId, ClientOrderId, Bar, BarType
 
 
 from trading_rule_manager import TradingRulesMutable
 from protocols.provider import ClockProvider, CacheInfoProvider
 from order.order import OrderTicket
+from event_manager import EventManager
+from schemas import EventType, EventPayload, Event
+
+
+class PreOrderValidationEvent(Event):
+    event_type: Literal[EventType.PRE_ORDER_VALIDATION] = EventType.PRE_ORDER_VALIDATION
+
+
+class PostOrderValidationEvent(Event):
+    event_type: Literal[EventType.POST_ORDER_VALIDATION] = (
+        EventType.POST_ORDER_VALIDATION
+    )
 
 
 class OrderValidator(ABC):
@@ -21,6 +33,7 @@ class OrderValidator(ABC):
         trading_rule: TradingRulesMutable,
         cache_info_provider: CacheInfoProvider,
         clock_provider: ClockProvider,
+        event_manager: EventManager,
     ):
         self._trading_rule: TradingRulesMutable = trading_rule
         self._cache_info_provider = cache_info_provider
@@ -28,9 +41,10 @@ class OrderValidator(ABC):
         self._pre_order_validation_result: dict[InstrumentId, dict[str, bool]] = (
             defaultdict(dict)
         )
-        self._post_order_validation_result: dict[InstrumentId, dict[str, bool]] = (
+        self._post_order_validation_result: dict[ClientOrderId, dict[str, bool]] = (
             defaultdict(dict)
         )
+        self._event_manager: EventManager = event_manager
 
     @property
     @abstractmethod
@@ -38,7 +52,7 @@ class OrderValidator(ABC):
 
     @property
     @abstractmethod
-    def post_order_validation_result(self) -> dict[InstrumentId, dict[str, bool]]: ...
+    def post_order_validation_result(self) -> dict[ClientOrderId, dict[str, bool]]: ...
 
     @abstractmethod
     def reset(self) -> None: ...
@@ -125,7 +139,7 @@ class ORBLongOrderValidator(OrderValidator):
         self._pre_order_validation_result: dict[InstrumentId, dict[str, bool]] = (
             defaultdict(dict)
         )
-        self._post_order_validation_result: dict[InstrumentId, dict[str, bool]] = (
+        self._post_order_validation_result: dict[ClientOrderId, dict[str, bool]] = (
             defaultdict(dict)
         )
 
@@ -134,14 +148,14 @@ class ORBLongOrderValidator(OrderValidator):
         return self._pre_order_validation_result
 
     @property
-    def post_order_validation_result(self) -> dict[InstrumentId, dict[str, bool]]:
+    def post_order_validation_result(self) -> dict[ClientOrderId, dict[str, bool]]:
         return self._post_order_validation_result
 
     def reset(self):
         self._pre_order_validation_result: dict[InstrumentId, dict[str, bool]] = (
             defaultdict(dict)
         )
-        self._post_order_validation_result: dict[InstrumentId, dict[str, bool]] = (
+        self._post_order_validation_result: dict[ClientOrderId, dict[str, bool]] = (
             defaultdict(dict)
         )
 
@@ -278,9 +292,35 @@ class ORBLongOrderValidator(OrderValidator):
             self._validate_instrument_id_not_present_in_open_orders(instrument_id)
             self._validate_instrument_id_not_present_in_open_positions(instrument_id)
             self._validate_intraday_profit_and_loss(instrument_id)
+            # event
+            event = PreOrderValidationEvent(
+                created_at=self._clock_provider.utc_now().replace(tzinfo=None),
+                payload=EventPayload(
+                    result={
+                        str(instrument_id): self._pre_order_validation_result[
+                            instrument_id
+                        ]
+                    }
+                ),
+            )
+            self._event_manager.add(event)
 
     def post_order_validate(self, order_ticket: OrderTicket):
         self._validate_cost_minimum_and_risk_value_minimum(order_ticket=order_ticket)
+        # event
+        event = PostOrderValidationEvent(
+            created_at=self._clock_provider.utc_now().replace(tzinfo=None),
+            payload=EventPayload(
+                result={
+                    str(
+                        order_ticket.order_client_order_id
+                    ): self._post_order_validation_result[
+                        order_ticket.order_client_order_id
+                    ]
+                }
+            ),
+        )
+        self._event_manager.add(event)
 
 
 ORDER_VALIDATOR_REGISTRY = {"orb_long_order_validator": ORBLongOrderValidator}

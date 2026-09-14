@@ -50,7 +50,7 @@ class Factor(ABC):
 
     @property
     @abstractmethod
-    def value(self) -> float | int: ...
+    def value(self) -> float | int | dict: ...
 
     def _check_bar_spec(self, bar: Bar) -> bool:
         if (
@@ -180,7 +180,10 @@ class OneHourNoNewHigh(Factor):
 
     @property
     def value(self):
-        return self._highest_price
+        return {
+            "updated_at": f"{self._updated_at.replace(tzinfo=None)}",
+            "current_datetime": f"{self._current_datetime.replace(tzinfo=None)}",
+        }
 
     def update(self, bar: Bar):
         if not self._check_bar_spec(bar):

@@ -1,14 +1,19 @@
 import enum
 import datetime
+import pandas as pd
+from typing import Literal
 from decimal import Decimal
 from collections import defaultdict
 from pydantic import BaseModel, model_serializer, ConfigDict, Field
-from pydantic_core.core_schema import SerializationInfo
 
 from nautilus_trader.model.orders import Order
 from nautilus_trader.model import InstrumentId, ClientOrderId, PositionId, Bar
 from nautilus_trader.model.enums import OrderSide, OrderType, TimeInForce
 from nautilus_trader.model.objects import Price, Quantity, Money
+
+from protocols.provider import ClockProvider
+from event_manager import EventManager
+from schemas import Event, EventType, EventPayload
 
 
 # model
@@ -32,7 +37,7 @@ class OrderRole(str, enum.Enum):
 
 
 class PositionState(str, enum.Enum):
-    OPEN = "open"
+    OPENED = "opened"
     CLOSED = "closed"
 
 
@@ -63,7 +68,7 @@ class OrderTicket(BaseModel):
     # position
     position_id: PositionId | None = None
     position_state: PositionState | None = None
-    position_open_at: datetime.datetime | None = None
+    position_opened_at: datetime.datetime | None = None
     position_closed_at: datetime.datetime | None = None
     position_realized_profit_and_loss: Decimal | None = None
     position_maximum_favorable_excursion: Decimal | None = None
@@ -84,28 +89,16 @@ class OrderTicket(BaseModel):
     reduce_only: bool = False
 
     @model_serializer(mode="wrap")
-    def convert_data_type(self, handler, info: SerializationInfo):
-        readable = info.context.get("readable", False) if info.context else False
+    def convert_data_type(self, handler):
         data = handler(self)
-        if not readable:
-            data.pop("state", None)
-            data.pop("role", None)
-            data.pop("order", None)
-            data.pop("risk_price", None)
-            data.pop("client_order_id", None)
-            data.pop("reference_price", None)
-            data.pop("parent_order_ticket_id", None)
-            data.pop("child_order_id", None)
-            data.pop("parent_order_id", None)
-            data.pop("position_id", None)
-            data.pop("entry_order_type", None)
-            return data
 
         for k, v in data.items():
             if isinstance(v, datetime.datetime):
                 data[k] = v.isoformat(timespec="seconds")
+            elif isinstance(v, Decimal):
+                data[k] = float(v)
             elif isinstance(v, Money):
-                data[k] = v.as_float()
+                data[k] = v.as_decimal()
             elif isinstance(v, Price):
                 data[k] = float(v)
             elif isinstance(v, Quantity):
@@ -160,10 +153,95 @@ class OrderTicket(BaseModel):
         return data
 
 
+# event
+class UpdateOnPostValidationFailedEvent(Event):
+    event_type: Literal[EventType.UPDATE_ON_POST_VALIDATION_FAILED] = (
+        EventType.UPDATE_ON_POST_VALIDATION_FAILED
+    )
+
+
+class UpdateOnPostValidationSucceedEvent(Event):
+    event_type: Literal[EventType.UPDATE_ON_POST_VALIDATION_SUCCEED] = (
+        EventType.UPDATE_ON_POST_VALIDATION_SUCCEED
+    )
+
+
+class RegisterOrderTicketEvent(Event):
+    event_type: Literal[EventType.REGISTER_ORDER_TICKET] = (
+        EventType.REGISTER_ORDER_TICKET
+    )
+
+
+class UpdateOnOrderSubmittedEvent(Event):
+    event_type: Literal[EventType.UPDATE_ON_ORDER_SUBMITTED] = (
+        EventType.UPDATE_ON_ORDER_SUBMITTED
+    )
+
+
+class UpdateOnOrderAcceptedEvent(Event):
+    event_type: Literal[EventType.UPDATE_ON_ORDER_ACCEPTED] = (
+        EventType.UPDATE_ON_ORDER_ACCEPTED
+    )
+
+
+class UpdateOnOrderFilledEvent(Event):
+    event_type: Literal[EventType.UPDATE_ON_ORDER_FILLED] = (
+        EventType.UPDATE_ON_ORDER_FILLED
+    )
+
+
+class UpdateOnOrderPartiallyFilledEvent(Event):
+    event_type: Literal[EventType.UPDATE_ON_ORDER_PARTIALLY_FILLED] = (
+        EventType.UPDATE_ON_ORDER_PARTIALLY_FILLED
+    )
+
+
+class UpdateOnOrderModifiedEvent(Event):
+    event_type: Literal[EventType.UPDATE_ON_ORDER_MODIFIED] = (
+        EventType.UPDATE_ON_ORDER_MODIFIED
+    )
+
+
+class UpdateOnOrderCanceledEvent(Event):
+    event_type: Literal[EventType.UPDATE_ON_ORDER_CANCELED] = (
+        EventType.UPDATE_ON_ORDER_CANCELED
+    )
+
+
+class UpdateOnOrderRejectedEvent(Event):
+    event_type: Literal[EventType.UPDATE_ON_ORDER_REJECTED] = (
+        EventType.UPDATE_ON_ORDER_REJECTED
+    )
+
+
+class UpdateOnOrderExpiredEvent(Event):
+    event_type: Literal[EventType.UPDATE_ON_ORDER_EXPIRED] = (
+        EventType.UPDATE_ON_ORDER_EXPIRED
+    )
+
+
+class UpdateOnPositionOpenedEvent(Event):
+    event_type: Literal[EventType.UPDATE_ON_POSITION_OPENED] = (
+        EventType.UPDATE_ON_POSITION_OPENED
+    )
+
+
+class UpdateOnPositionClosedEvent(Event):
+    event_type: Literal[EventType.UPDATE_ON_POSITION_CLOSED] = (
+        EventType.UPDATE_ON_POSITION_CLOSED
+    )
+
+
+class RecordOrderTicketEvent(Event):
+    event_type: Literal[EventType.RECORD_ORDER_TICKET] = EventType.RECORD_ORDER_TICKET
+
+
 class OrderTicketManager:
-    def __init__(self):
+    def __init__(self, event_manager: EventManager, clock_provider: ClockProvider):
         self._books: dict[ClientOrderId, OrderTicket] = defaultdict()
         self._instrument_ids: set[InstrumentId] = set()
+        self._event_manager: EventManager = event_manager
+        self._clock_provider: ClockProvider = clock_provider
 
     @property
     def open_order_count(self):
@@ -175,6 +253,17 @@ class OrderTicketManager:
         return oot
 
     def reset(self):
+        # event
+        tickets = [ticket.model_dump() for ticket in self._books.values()]
+        data = pd.DataFrame(tickets)
+        file_name = "order_tickets"
+        event = RecordOrderTicketEvent(
+            created_at=self._clock_provider.utc_now().replace(tzinfo=None),
+            payload=EventPayload(reference_data=data, reference_file_name=file_name),
+        )
+        self._event_manager.add(event)
+
+        # reset
         self._books: dict[ClientOrderId, OrderTicket] = defaultdict()
         self._instrument_ids: set[InstrumentId] = set()
 
@@ -197,7 +286,7 @@ class OrderTicketManager:
         for ot in self._books.values():
             if (
                 ot.instrument_id == instrument_id
-                and ot.position_state == PositionState.OPEN
+                and ot.position_state == PositionState.OPENED
             ):
 
                 ots.append(ot)
@@ -215,74 +304,152 @@ class OrderTicketManager:
     ):
         self._books[client_order_id] = order_ticket
         self._instrument_ids.add(order_ticket.instrument_id)
+        # event
+        event = RegisterOrderTicketEvent(
+            created_at=self._clock_provider.utc_now().replace(tzinfo=None),
+            payload=EventPayload(result=order_ticket.model_dump()),
+        )
+        self._event_manager.add(event)
 
-    def update_on_validation_failed(
-        self, client_order_id: ClientOrderId, time: datetime.time
+    def update_on_post_validation_failed(
+        self, client_order_id: ClientOrderId, datetime: datetime.datetime
     ):
         self._books[client_order_id].order_state = OrderState.VALIDATION_FAILED
-        self._books[client_order_id].order_validation_failed_at = time
+        self._books[client_order_id].order_validation_failed_at = datetime
 
-    def update_on_validation_succeed(
-        self, client_order_id: ClientOrderId, time: datetime.time
+        # event
+        event = UpdateOnPostValidationFailedEvent(
+            created_at=self._clock_provider.utc_now().replace(tzinfo=None),
+            payload=EventPayload(
+                result={str(client_order_id): OrderState.VALIDATION_FAILED}
+            ),
+        )
+        self._event_manager.add(event)
+
+    def update_on_post_validation_succeed(
+        self, client_order_id: ClientOrderId, datetime: datetime.datetime
     ):
         self._books[client_order_id].order_state = OrderState.VALIDATION_SUCCESSED
-        self._books[client_order_id].order_validation_succeed_at = time
+        self._books[client_order_id].order_validation_succeed_at = datetime
+
+        # event
+        event = UpdateOnPostValidationSucceedEvent(
+            created_at=self._clock_provider.utc_now().replace(tzinfo=None),
+            payload=EventPayload(
+                result={str(client_order_id): OrderState.VALIDATION_SUCCESSED}
+            ),
+        )
+        self._event_manager.add(event)
 
     def update_on_order_submitted(
-        self, client_order_id: ClientOrderId, time: datetime.time
+        self, client_order_id: ClientOrderId, datetime: datetime.datetime
     ):
         self._books[client_order_id].order_state = OrderState.SUBMITTED
-        self._books[client_order_id].order_submitted_at = time
+        self._books[client_order_id].order_submitted_at = datetime
+
+        # event
+        event = UpdateOnOrderSubmittedEvent(
+            created_at=self._clock_provider.utc_now().replace(tzinfo=None),
+            payload=EventPayload(result={str(client_order_id): OrderState.SUBMITTED}),
+        )
+        self._event_manager.add(event)
 
     def update_on_order_accepted(
-        self, client_order_id: ClientOrderId, time: datetime.time
+        self, client_order_id: ClientOrderId, datetime: datetime.datetime
     ):
         self._books[client_order_id].order_state = OrderState.ACCEPTED
-        self._books[client_order_id].order_accepted_at = time
+        self._books[client_order_id].order_accepted_at = datetime
+
+        # event
+        event = UpdateOnOrderAcceptedEvent(
+            created_at=self._clock_provider.utc_now().replace(tzinfo=None),
+            payload=EventPayload(result={str(client_order_id): OrderState.ACCEPTED}),
+        )
+        self._event_manager.add(event)
 
     def update_on_order_rejected(
-        self, client_order_id: ClientOrderId, time: datetime.time
+        self, client_order_id: ClientOrderId, datetime: datetime.datetime
     ):
         self._books[client_order_id].order_state = OrderState.REJECTED
-        self._books[client_order_id].order_rejected_at = time
+        self._books[client_order_id].order_rejected_at = datetime
+
+        # event
+        event = UpdateOnOrderRejectedEvent(
+            created_at=self._clock_provider.utc_now().replace(tzinfo=None),
+            payload=EventPayload(result={str(client_order_id): OrderState.REJECTED}),
+        )
+        self._event_manager.add(event)
 
     def update_on_order_canceled(
-        self, client_order_id: ClientOrderId, time: datetime.time
+        self, client_order_id: ClientOrderId, datetime: datetime.datetime
     ):
         self._books[client_order_id].order_state = OrderState.CANCELED
-        self._books[client_order_id].order_canceled_at = time
+        self._books[client_order_id].order_canceled_at = datetime
+
+        # event
+        event = UpdateOnOrderCanceledEvent(
+            created_at=self._clock_provider.utc_now().replace(tzinfo=None),
+            payload=EventPayload(result={str(client_order_id): OrderState.CANCELED}),
+        )
+        self._event_manager.add(event)
 
     def update_on_order_expired(
-        self, client_order_id: ClientOrderId, time: datetime.time
+        self, client_order_id: ClientOrderId, datetime: datetime.datetime
     ):
         self._books[client_order_id].order_state = OrderState.EXPIRED
-        self._books[client_order_id].order_expired_at = time
+        self._books[client_order_id].order_expired_at = datetime
+
+        # event
+        event = UpdateOnOrderExpiredEvent(
+            created_at=self._clock_provider.utc_now().replace(tzinfo=None),
+            payload=EventPayload(result={str(client_order_id): OrderState.EXPIRED}),
+        )
+        self._event_manager.add(event)
 
     def update_on_order_filled(
-        self, client_order_id: ClientOrderId, time: datetime.time
+        self, client_order_id: ClientOrderId, datetime: datetime.datetime
     ):
         self._books[client_order_id].order_state = OrderState.FILLED
-        self._books[client_order_id].order_filled_at = time
+        self._books[client_order_id].order_filled_at = datetime
 
-    def update_position_id(
-        self, client_order_id: ClientOrderId, position_id: PositionId
+        # event
+        event = UpdateOnOrderFilledEvent(
+            created_at=self._clock_provider.utc_now().replace(tzinfo=None),
+            payload=EventPayload(result={str(client_order_id): OrderState.FILLED}),
+        )
+        self._event_manager.add(event)
+
+    def update_on_position_opened(
+        self,
+        client_order_id: ClientOrderId,
+        position_id: PositionId,
+        datetime: datetime.datetime,
     ):
+        self._books[client_order_id].position_state = PositionState.OPENED
+        self._books[client_order_id].position_opened_at = datetime
         self._books[client_order_id].position_id = position_id
 
-    def update_position_state(
-        self, client_order_id: ClientOrderId, position_state: PositionState
-    ):
-        self._books[client_order_id].position_state = position_state
+        # event
+        event = UpdateOnPositionOpenedEvent(
+            created_at=self._clock_provider.utc_now().replace(tzinfo=None),
+            payload=EventPayload(result={str(client_order_id): PositionState.OPENED}),
+        )
+        self._event_manager.add(event)
 
-    def update_position_open_time(
-        self, client_order_id: ClientOrderId, time: datetime.time
+    def update_on_position_closed(
+        self,
+        client_order_id: ClientOrderId,
+        datetime: datetime.datetime,
     ):
-        self._books[client_order_id].position_open_at = time
+        self._books[client_order_id].position_state = PositionState.CLOSED
+        self._books[client_order_id].position_closed_at = datetime
 
-    def update_position_close_time(
-        self, client_order_id: ClientOrderId, time: datetime.time
-    ):
-        self._books[client_order_id].position_closed_at = time
+        # event
+        event = UpdateOnPositionClosedEvent(
+            created_at=self._clock_provider.utc_now().replace(tzinfo=None),
+            payload=EventPayload(result={str(client_order_id): PositionState.CLOSED}),
+        )
+        self._event_manager.add(event)
 
     def update_order_filled_price_qty(
         self, client_order_id: ClientOrderId, qty: Quantity, price: Price
@@ -305,7 +472,7 @@ class OrderTicketManager:
             realized_profit_and_loss
         )
 
-    def upate_mae_mfe(self, bars: list[Bar]):
+    def update_mae_mfe(self, bars: list[Bar]):
         for bar in bars:
             if not bar.bar_type.instrument_id in self._instrument_ids:
                 return
