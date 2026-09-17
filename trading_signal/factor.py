@@ -1,27 +1,10 @@
 import datetime
 from collections import deque
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
 
 from nautilus_trader.model import Bar
 from nautilus_trader.core.datetime import unix_nanos_to_dt
-
-from schemas import (
-    Operator,
-    RankingConfigs,
-)
-
-
-@dataclass(frozen=True)
-class FactorConfig:
-    name: str
-    operator: Operator
-    threshold: float
-    bar_spec_requirement: str
-    # for ranking,
-    ascending: bool
-    ranking_config: RankingConfigs
-    bar_buffer_size: int
+from schemas import Operator
 
 
 class Factor(ABC):

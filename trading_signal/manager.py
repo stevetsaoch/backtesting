@@ -6,7 +6,9 @@ from pydantic import BaseModel, ConfigDict
 
 from nautilus_trader.model import Bar, InstrumentId, ClientOrderId
 
-from trading_signal.signal import BaseSignal, SignalMeta, SIGNAL_REGISTRY
+from trading_signal.schemas import SignalMeta
+from trading_signal.signal import BaseSignal
+from trading_signal.signal_registry import SIGNAL_REGISTRY
 
 
 class InstrumentSignal(BaseModel):
@@ -166,6 +168,3 @@ class ORBSignalManager(SignalManager):
         self._is_instrument_ids_fixed = False
         self._entry_signal_map: dict[InstrumentId, InstrumentSignal] = defaultdict()
         self._exit_signal_map: dict[ClientOrderId, OrderTicketSignal] = defaultdict()
-
-
-SIGNAL_MANAGER_REGISTRY: dict[str, type] = {"orb_signal_manager": ORBSignalManager}

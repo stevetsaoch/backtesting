@@ -9,10 +9,10 @@ from nautilus_trader.model import InstrumentId
 from nautilus_trader.indicators.base import Indicator
 
 from protocols.provider import ClockProvider
-from indicator.indicator import IndicatorMeta
-from indicator.field import IndicatorFieldConfig, TYPE_REGISTRY
-from event_manager import EventManager
-from schemas import Event, EventType, EventPayload
+from indicator.schemas import IndicatorMeta, IndicatorFieldConfig
+from indicator.field import TYPE_REGISTRY
+from event.manager import EventManager
+from event.schemas import Event, EventType, EventPayload
 
 
 # event
@@ -216,8 +216,3 @@ class ORBWatchListManager(WatchListManager):
             "intraday_low",
         ].item()
         return v
-
-
-WATCHLIST_MANAGER_REGISTRY: dict[str, type] = {
-    "orb_watchlist_manager": ORBWatchListManager
-}

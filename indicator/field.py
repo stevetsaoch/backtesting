@@ -1,12 +1,9 @@
 import datetime
+from collections import deque
 from abc import ABC, abstractmethod
-from collections import defaultdict, deque
-from dataclasses import dataclass, field
 
 from nautilus_trader.model import Bar
 from nautilus_trader.core.datetime import unix_nanos_to_dt
-
-from schemas import Operator
 
 
 TYPE_REGISTRY: dict[str, type] = {
@@ -17,19 +14,6 @@ TYPE_REGISTRY: dict[str, type] = {
     "datetime.date": datetime.date,
     "datetime.time": datetime.time,
 }
-
-
-@dataclass(frozen=True)
-class IndicatorFieldConfig:
-    name: str
-    field_name: str
-    field_type: str
-    depends_on: tuple[str, ...]
-    bar_spec_requirement: str
-    params: dict | None = field(default=None)
-    operator: Operator | None = field(default=None)
-    threshold: float | None = field(default=None)
-    bar_buffer_size: int | None = field(default=None)
 
 
 # fields
@@ -318,18 +302,3 @@ class IntradayATRField(IndicatorField):
             return False
         else:
             return True
-
-
-FIELD_REGISTRY: dict[str, type] = {
-    "intraday_open": IntradayOpenField,
-    "intraday_high": IntradayHighField,
-    "intraday_high_updated_at": IntradayHighUpdatedAtField,
-    "intraday_low": IntradayLowField,
-    "intraday_low_updated_at": IntradayLowUpdatedAtField,
-    "intraday_trading_value": IntradayTradingValueField,
-    "intraday_amplitude": IntradayAmplitudeField,
-    "intraday_atr": IntradayATRField,
-}
-
-if __name__ == "__main__":
-    pass

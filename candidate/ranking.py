@@ -1,14 +1,12 @@
-import enum
 import pandas as pd
 from typing import TypeVar
 from collections import defaultdict
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
-from pydantic import BaseModel, ConfigDict, field_serializer
-
+from pydantic import BaseModel, field_serializer, ConfigDict
 from nautilus_trader.model import InstrumentId
 
-from trading_signal.signal import SignalMeta
+
+from trading_signal.schemas import SignalMeta, AggregationMethod
 
 
 # field can use as string to assign to variable
@@ -31,31 +29,6 @@ class SignalResultFlat(BaseModel, metaclass=FieldNameMeta):
     signal: str
     factor: str
     factor_value: float | int
-
-
-class TieBreakingMethod(str, enum.Enum):
-    MINIMUM = "min"
-    MAXIMUM = "max"
-    AVERAGE = "average"
-    FIRST = "first"
-    DENSE = "dense"
-
-
-class AggregationMethod(str, enum.Enum):
-    MINIMUM = "min"
-    MAXIMUM = "max"
-    AVGERAGE = "average"
-
-
-@dataclass(frozen=True)
-class PercentileRankingMethod:
-    tie_breaking_method: TieBreakingMethod
-    ascending: bool
-
-
-@dataclass(frozen=True)
-class ZScoreRankingMethodConfig:
-    ascending: bool
 
 
 class RankingMetric(BaseModel):
@@ -127,7 +100,7 @@ CANDIDATE_RANKING_METHOD = TypeVar(
 )
 
 
-class PercentilRanking(CandidateRankingMethod):
+class PercentileRanking(CandidateRankingMethod):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._ranking_metric = RankingMetric()
@@ -205,8 +178,3 @@ class PercentilRanking(CandidateRankingMethod):
         for s in signal_meta_set:
             sd[s.name] = s.internal_aggregation_method
         return sd
-
-
-RANKING_METHOD_REGISTRY = {
-    "percentile": PercentilRanking,
-}

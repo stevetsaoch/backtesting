@@ -1,21 +1,11 @@
 import datetime
 from typing import Any
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
 
 from nautilus_trader.model import Bar
 
-from trading_signal.factor import FactorConfig, FACTOR_REGISTRY
-from schemas import AggregationMethod
-
-
-@dataclass(frozen=True)
-class SignalMeta:
-    name: str
-    factor_configs: list[FactorConfig]
-    internal_aggregation_method: AggregationMethod
-    is_entry_signal: bool
-    is_exit_signal: bool
+from trading_signal.schemas import FactorConfig
+from trading_signal.factor import FACTOR_REGISTRY
 
 
 def build_factor(factor_configs: list[FactorConfig], established_at: datetime.datetime):
@@ -132,9 +122,3 @@ class ORBExitSignal(BaseSignal):
             if (cfg.operator is not None and cfg.threshold is not None)
         }
         return condition
-
-
-SIGNAL_REGISTRY: dict[str, type] = {
-    "orb_entry_signal": ORBEntrySignal,
-    "orb_exit_signal": ORBExitSignal,
-}

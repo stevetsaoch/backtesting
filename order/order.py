@@ -12,8 +12,8 @@ from nautilus_trader.model.enums import OrderSide, OrderType, TimeInForce
 from nautilus_trader.model.objects import Price, Quantity, Money
 
 from protocols.provider import ClockProvider
-from event_manager import EventManager
-from schemas import Event, EventType, EventPayload
+from event.manager import EventManager
+from event.schemas import Event, EventType, EventPayload
 
 
 # model
@@ -94,7 +94,7 @@ class OrderTicket(BaseModel):
 
         for k, v in data.items():
             if isinstance(v, datetime.datetime):
-                data[k] = v.isoformat(timespec="seconds")
+                data[k] = v
             elif isinstance(v, Decimal):
                 data[k] = float(v)
             elif isinstance(v, Money):

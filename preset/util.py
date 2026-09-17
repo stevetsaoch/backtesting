@@ -1,0 +1,2 @@
+class Sweep(list):
+    pass

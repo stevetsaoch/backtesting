@@ -8,25 +8,19 @@ from nautilus_trader.model import InstrumentId
 
 class WatchlistManagerBaseInterface(Protocol):
     @property
-    @abstractmethod
     def is_watchlist_ready(self) -> bool: ...
 
     @property
-    @abstractmethod
     def data(self) -> pd.DataFrame: ...
 
     @property
-    @abstractmethod
     def snapshot_data(self) -> pd.DataFrame: ...
 
     @property
-    @abstractmethod
     def watchlist(self) -> list[InstrumentId]: ...
 
-    @abstractmethod
     def update(self, time: datetime.time): ...
 
-    @abstractmethod
     def reset(self): ...
 
 

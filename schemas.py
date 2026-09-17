@@ -3,24 +3,21 @@ import datetime
 import operator
 import zoneinfo
 import pandas as pd
-from decimal import Decimal
-from dataclasses import dataclass, asdict
-from typing import Literal, ClassVar, Any, Union
-from pydantic import BaseModel, ConfigDict, model_validator, field_serializer
+from dataclasses import dataclass
 from ib_async import Contract, Stock
-from nautilus_trader.backtest.config import ImportableLatencyModelConfig
-from nautilus_trader.model.instruments import Equity
+from typing import Literal, ClassVar, Any, Union
+from pydantic import BaseModel, ConfigDict, model_validator
+
+from nautilus_trader.model.instruments import Equity, Instrument
 from nautilus_trader.model.identifiers import InstrumentId, Symbol
+from nautilus_trader.persistence.catalog import ParquetDataCatalog
 from nautilus_trader.model.objects import Price, Quantity
-from nautilus_trader.model import Venue, Currency
-from nautilus_trader.model import Bar as NauBar
+from nautilus_trader.model import Venue, Currency, Money, BarType, Bar
+from nautilus_trader.backtest.models import FillModel, LatencyModel, FeeModel
+from nautilus_trader.model.enums import OmsType, AccountType
 from nautilus_trader.model.currencies import USD
 from nautilus_trader.config import (
-    BacktestVenueConfig,
     BacktestDataConfig,
-    ImportableFillModelConfig,
-    ImportableFeeModelConfig,
-    ImportableLatencyModelConfig,
 )
 
 
@@ -180,7 +177,7 @@ class HistoricalBar(BaseModel):
 
 
 # condition
-class Bar(BaseModel):
+class IbkrBar(BaseModel):
     date: datetime.datetime | datetime.date
     open: float
     high: float
@@ -408,51 +405,6 @@ class NautilusBarType(BaseModel):
         return bt
 
 
-class VenueConfig(BaseModel):
-    name: str
-    oms_type: str
-    account_type: str
-    base_currency: str
-    starting_balances: float
-    # fill model
-    prob_fill_on_limit: float
-    prob_slippage: float
-    random_seed: int
-    # fee model
-    fee_model_path: str | None = None
-    fee_model_config_path: str | None = None
-    base_latency_nanos: int | None = None
-
-    def to_backtest_venue_config(self) -> BacktestVenueConfig:
-        bvc = BacktestVenueConfig(
-            name=self.name,
-            oms_type=self.oms_type,
-            account_type=self.account_type,
-            base_currency=self.base_currency,
-            starting_balances=[f"{str(self.starting_balances)} {self.base_currency}"],
-            latency_model=ImportableLatencyModelConfig(
-                latency_model_path="nautilus_trader.backtest.models:LatencyModel",
-                config_path="nautilus_trader.config:LatencyModelConfig",
-                config={"base_latency_nanos": self.base_latency_nanos},
-            ),
-            fill_model=ImportableFillModelConfig(
-                fill_model_path="nautilus_trader.backtest.models:FillModel",
-                config_path="nautilus_trader.config:FillModelConfig",
-                config={
-                    "prob_fill_on_limit": self.prob_fill_on_limit,
-                    "prob_slippage": self.prob_slippage,
-                    "random_seed": self.random_seed,
-                },
-            ),
-            fee_model=ImportableFeeModelConfig(
-                fee_model_path=self.fee_model_path,
-                config_path=self.fee_model_config_path,
-                config={},
-            ),
-        )
-        return bvc
-
-
 class DataConfig(BaseModel):
     instrument: NautilusInstrumentId
     catalog_path: str
@@ -465,7 +417,7 @@ class DataConfig(BaseModel):
 
         btdf = BacktestDataConfig(
             catalog_path=self.catalog_path,
-            data_cls=NauBar if self.data_cls == "bar" else None,
+            data_cls=Bar if self.data_cls == "bar" else None,
             bar_types=self.bar_types,
             instrument_id=self.instrument.to_string(),
             start_time=self.start_time,
@@ -475,210 +427,143 @@ class DataConfig(BaseModel):
         return btdf
 
 
-class EventType(str, enum.Enum):
-    #
-    RECORD_CONDITION = "record_condition"
-    RECORD_SIGNAL_RAW_DATA = "record_signal_raw_data"
-    CREATE_SIGNAL_RAW_DATA = "create_signal_raw_data"
-    CREATE_WATCHLIST = "create_watchlist"
-    FORCED_CLOSE_TRIGGERED = "forced_close_triggered"
-    EXIT_SIGNAL_TRIGGERED = "exit_signal_triggered"
-    RANK_CANDIDATE = "rank_candidate"
-    PRE_ORDER_VALIDATION = "pre_order_validation"
-    POST_ORDER_VALIDATION = "post_order_validation"
-    COMPOSE_ORDER_TICKET = "compose_order_ticket"
-    REGISTER_ORDER_TICKET = "register_order_ticket"
-
-    UPDATE_ON_POST_VALIDATION_FAILED = "update_on_post_validation_failed"
-    UPDATE_ON_POST_VALIDATION_SUCCEED = "update_on_post_validation_succeed"
-    # order
-    UPDATE_ON_ORDER_SUBMITTED = "update_on_order_submitted"
-    UPDATE_ON_ORDER_ACCEPTED = "update_on_order_accepted"
-    UPDATE_ON_ORDER_FILLED = "update_on_order_filled"
-    UPDATE_ON_ORDER_PARTIALLY_FILLED = "update_on_order_partially_filled"
-    UPDATE_ON_ORDER_MODIFIED = "update_on_order_modified"
-    UPDATE_ON_ORDER_CANCELED = "update_on_order_canceled"
-    UPDATE_ON_ORDER_REJECTED = "update_on_order_rejected"
-    UPDATE_ON_ORDER_EXPIRED = "update_on_order_expired"
-    UPDATE_ON_POSITION_OPENED = "update_on_position_opened"
-    UPDATE_ON_POSITION_CLOSED = "update_on_position_closed"
-    #
-    RECORD_ORDER_TICKET = "record_order_ticket"
-
-
-class EventPayload(BaseModel):
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-    condition: str | dict | None = None
-    result: list | set | dict | bool | None = None
-    description: str | None = None
-    reference_file_name: str | None = None
-    reference_data: pd.DataFrame | None = None
-
-
-class Event(BaseModel):
-    event_type: EventType
-    created_at: datetime.datetime
-    payload: EventPayload
-
-    model_config = {"use_enum_values": True}
-
-    @field_serializer("payload")
-    def serialize_payload(self, payload, _info):
-        out = {}
-        for k, v in payload.model_dump().items():
-            if isinstance(k, enum.Enum):
-                out[k.value] = v
-            elif isinstance(k, str):
-                out[k] = v
-            else:
-                out[str(k)] = v
-        return out
-
-
-class RecordConditionEvent(Event):
-    event_type: Literal[EventType.RECORD_CONDITION] = EventType.RECORD_CONDITION
-
-
-# field can use as string to assign to variable
-class FieldNameMeta(type(BaseModel)):
-    def __getattr__(cls, item: str):
-        if item.startswith("__") and item.endswith("__"):
-            raise AttributeError(item)
-
-        for klass in cls.__mro__:
-            fields = klass.__dict__.get("__pydantic_fields__")
-            if fields and item in fields:
-                return item
-
-        raise AttributeError(f"{cls.__name__!r} has no attribute {item!r}")
-
-
-class CandidateFlat(BaseModel, metaclass=FieldNameMeta):
-    instrument_id: str
-    signal: str
-    factor: str
-    factor_value: float | int
-
-
-class TieBreakingMethod(str, enum.Enum):
-    MINIMUM = "min"
-    MAXIMUM = "max"
-    AVERAGE = "average"
-    FIRST = "first"
-    DENSE = "dense"
-
-
-class AggregationMethod(str, enum.Enum):
-    MINIMUM = "min"
-    MAXIMUM = "max"
-    AVGERAGE = "average"
-
-
-@dataclass(frozen=True)
-class PercentileRankingConfig:
-    tie_breaking_method: TieBreakingMethod
-    ascending: bool
-
-
-@dataclass(frozen=True)
-class ZScoreRankingConfig:
-    ascending: bool
-
-
-def enum_value_factory(items):
-    out = {}
-    for k, v in items:
-        out[k] = v.value if isinstance(v, enum.Enum) else v
-    return out
-
-
-@dataclass(frozen=True)
-class RankingConfigs:
-    percentile: PercentileRankingConfig
-    zscore: ZScoreRankingConfig
-
-    def to_dict(self):
-        return asdict(self, dict_factory=enum_value_factory)
-
-
-@dataclass(frozen=True)
-class CustomDataMeta:
+class VenueEnvConfig(BaseModel):
     name: str
-    metadata: dict[str, str]
+    oms_type: str
+    account_type: str
+    base_currency: str
+    starting_balances: float
+    # fill model
+    prob_fill_on_limit: float
+    prob_slippage: float
+    random_seed: int
+    # fee model
+    fee_model_path: str
+    fee_model_config_path: str
+    base_latency_nanos: int
 
 
-@dataclass(frozen=True)
-class AccountConfig:
+class VenuePresetInbound(BaseModel):
+    name: str
+    oms_type: str
+    account_type: str
+    base_currency: str
+    starting_balances: float
+    # fill model
+    prob_fill_on_limit: float
+    prob_slippage: float
+    random_seed: int
+    # fee model
+    fee_model_path: str
+    fee_model_config_path: str
+    base_latency_nanos: int
+
+
+class VenuePresetOutbound(VenuePresetInbound):
+    pass
+
+
+class VenueConfig(BaseModel):
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
     venue: Venue
-
-
-@dataclass(frozen=True)
-class PortfolioInfo:
-    venue: Venue
-    currency: Currency
-    balance: Decimal
-
-
-@dataclass(frozen=True)
-class FeeModelInfo:
-    fee_per_share: Decimal
-    minimum_fee_per_order: Decimal
-    maximum_fee_ratio_per_order: Decimal
-
-
-@dataclass(frozen=True)
-class OrderRules:
-    trading_bar_type: str
-    stop_price_buffer: Decimal
-    order_value_maximum: (
-        float  # tradable_balance / open_position_maximum, update frequence: daily
-    )
-    # down sizing
-    order_size_multiplier_trigger_loss_ratio: Decimal
-    order_size_multiplier_trigger_minimum: Decimal  # order_size_multiplier_trigger_loss_ratio * intraday_loss_limit, update frequence: daily
-    order_size_multiplier_ratio: Decimal  # change order size when intraday loss / intraday_loss_limit > trigger_loss_ratio
-
-
-@dataclass(frozen=True)
-class PositionRules:
-    open_position_maximum: Decimal
-
-
-@dataclass(frozen=True)
-class RiskRules:
-    # balance
-    tradable_balance_ratio: Decimal
-    tradable_balance: (
-        Decimal  # balance * tradabel_balance_raito, update frequence: daily
-    )
-    # loss
-    intraday_risk_ratio: Decimal
-    intraday_loss_maximum: (
-        Decimal  # balance * intraday_risk_ratio, update frequence: daily
-    )
-    # opportunity cost, actual risk value > max(cost_efficiency_minimum, risk_value_minimum)
-    target_profit_minimum: Decimal
-    cost_ratio_maximum: Decimal
-    cost_estimated_per_trade: Decimal
-    cost_efficiency_value_minimum: (
-        Decimal  # cost estimated / cost ratio, prevent cost drag
-    )
-    risk_value_ratio_minimum: Decimal
-    risk_value_minimum: Decimal  # risk_value_ratio * balance, update frequence: daily
-
-
-@dataclass(frozen=True)
-class SessionRule:
-    market_open_at: datetime.time
-    market_close_at: datetime.time
-    trading_start_at: datetime.time
-    forced_close_at: datetime.time
+    oms_type: OmsType
+    account_type: AccountType
+    base_currency: Currency
+    starting_balances: list[Money]
+    fill_model: FillModel
+    fee_model: FeeModel
+    lantency_model: LatencyModel
 
 
 @dataclass(frozen=True)
 class SessionConfig:
     market_open_at: datetime.time
     market_close_at: datetime.time
+
+
+class ManagerPresetInbound(BaseModel):
+    trading_rule_manager: str
+    candidate_manager: str
+    order_validator: str
+    order_composer: str
+    position_evaluator: str
+    watchlist_manager: str
+    signal_manager: str
+
+
+class ManagerPresetOutbound(ManagerPresetInbound):
+    pass
+
+
+class ManagerConfig(BaseModel):
+    trading_rule_manager: str
+    candidate_manager: str
+    order_validator: str
+    order_composer: str
+    position_evaluator: str
+    watchlist_manager: str
+    signal_manager: str
+
+
+class BarPresetInbound(BaseModel):
+    external_bar_unit: Literal["year", "month", "day", "minute"]
+    external_bar_size: int
+    l1_type: Literal["bid", "ask", "trade"]
+    external: bool
+    internal_bar_size: int | None = None
+    internal_bar_unit: Literal["year", "month", "day", "minute"] | None = None
+    is_warmup_data: bool
+
+
+class BarPresetOutbound(BarPresetInbound):
+    pass
+
+
+class CatalogConfig(BaseModel):
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+    data_start_datetime: datetime.datetime
+    data_end_datetime: datetime.datetime
+    warmup_data_start_datetime: datetime.datetime
+    catalog: ParquetDataCatalog
+    instrument_ids: list[str]
+    instruments: list[Instrument]
+    bar_types: dict[InstrumentId, list[BarType]]
+    bars: list[Bar]
+
+
+class CatalogPresetInbound(BaseModel):
+    data_start_datetime: datetime.datetime
+    data_end_datetime: datetime.datetime
+    warmup_data_delta: datetime.timedelta
+    catalog_path: str
+    bar_presets: list[BarPresetInbound]
+    symbols: list[str]
+
+
+class CatalogPresetOutbound(BaseModel):
+    data_start_datetime: datetime.datetime
+    data_end_datetime: datetime.datetime
+    warmup_data_delta: datetime.timedelta
+    catalog_path: str
+    bar_presets: list[BarPresetOutbound]
+
+
+class BacktestingPresetInbound(BaseModel):
+    snapshot_time: datetime.time | None
+
+
+class BacktestingPresetOutbound(BaseModel):
+    snapshot_time: datetime.time | None
+
+
+class BacktestingConfig(BaseModel):
+    snapshot_time: datetime.time | None
+
+
+class SweepConfig(BaseModel):
+    field_name: str
+    values: list[Any]
 
 
 if __name__ == "__main__":

@@ -5,12 +5,16 @@ from nautilus_trader.model.enums import PositionSide, OrderSide
 from nautilus_trader.model import Position, InstrumentId, ClientOrderId
 from nautilus_trader.model.orders import Order
 
-from trading_rule_manager import TradingRulesMutable
+from trading_rule.schemas import TradingRule
 from trading_signal.signal import BaseSignal
-from trading_signal.signal_manager import SignalManager
+from trading_signal.manager import SignalManager
 from protocols.provider import ClockProvider, CacheInfoProvider
-from event_manager import EventManager
-from schemas import Event, EventType, EventPayload, RecordConditionEvent
+from event.manager import EventManager
+from event.schemas import Event, EventType, EventPayload
+
+
+class RecordConditionEvent(Event):
+    event_type: Literal[EventType.RECORD_CONDITION] = EventType.RECORD_CONDITION
 
 
 class ForcedCloseTriggeredEvent(Event):
@@ -32,7 +36,7 @@ class PositionEvaluator(ABC):
 
     def __init__(
         self,
-        trading_rule: TradingRulesMutable,
+        trading_rule: TradingRule,
         signal_manager: SignalManager,
         cache_info_provider: CacheInfoProvider,
         clock_provider: ClockProvider,
@@ -41,7 +45,7 @@ class PositionEvaluator(ABC):
         self._event_mannger: EventManager = event_manager
         self._signal_manager: SignalManager = signal_manager
         self._cache_info_provider: CacheInfoProvider = cache_info_provider
-        self._trading_rule: TradingRulesMutable = trading_rule
+        self._trading_rule: TradingRule = trading_rule
         self._clock_provider = clock_provider
         self._is_forced_close_triggered: bool = False
         self._is_exit_signal_triggered: bool = False
@@ -135,7 +139,7 @@ class ORBPositionEvaluator(PositionEvaluator):
 
     def evaluate_forced_close_triggered(self) -> bool:
         if (
-            self._clock_provider.utc_now().time()
+            self._clock_provider.utc_now().replace(tzinfo=None).time()
             >= self._trading_rule.session_rule.forced_close_at
         ):
             self._is_forced_close_triggered = True
@@ -213,9 +217,6 @@ class ORBPositionEvaluator(PositionEvaluator):
 
     def _check_forced_close_time_trigger(self):
         return (
-            self._clock_provider.utc_now().time()
+            self._clock_provider.utc_now().replace(tzinfo=None).time()
             >= self._trading_rule.session_rule.forced_close_at
         )
-
-
-POSITION_EVALUATOR_REGISTRY = {"orb_position_evaluator": ORBPositionEvaluator}

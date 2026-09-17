@@ -10,11 +10,11 @@ from nautilus_trader.core.datetime import unix_nanos_to_dt
 from nautilus_trader.model import InstrumentId, ClientOrderId, Bar, BarType
 
 
-from trading_rule_manager import TradingRulesMutable
+from trading_rule.schemas import TradingRule
 from protocols.provider import ClockProvider, CacheInfoProvider
 from order.order import OrderTicket
-from event_manager import EventManager
-from schemas import EventType, EventPayload, Event
+from event.manager import EventManager
+from event.schemas import EventType, EventPayload, Event
 
 
 class PreOrderValidationEvent(Event):
@@ -30,12 +30,12 @@ class PostOrderValidationEvent(Event):
 class OrderValidator(ABC):
     def __init__(
         self,
-        trading_rule: TradingRulesMutable,
+        trading_rule: TradingRule,
         cache_info_provider: CacheInfoProvider,
         clock_provider: ClockProvider,
         event_manager: EventManager,
     ):
-        self._trading_rule: TradingRulesMutable = trading_rule
+        self._trading_rule: TradingRule = trading_rule
         self._cache_info_provider = cache_info_provider
         self._clock_provider = clock_provider
         self._pre_order_validation_result: dict[InstrumentId, dict[str, bool]] = (
@@ -191,12 +191,10 @@ class ORBLongOrderValidator(OrderValidator):
 
     @OrderValidator.validation_result(target_attr="_pre_order_validation_result")
     def _validate_available_chance(self, instrument_id: InstrumentId):
-        open_orders = self._cache_info_provider.orders_open(
-            side=self._order_side, instrument_id=instrument_id
-        )
+        open_orders = self._cache_info_provider.orders_open(side=self._order_side)
 
         open_positions = self._cache_info_provider.positions_open(
-            side=self._position_side, instrument_id=instrument_id
+            side=self._position_side
         )
         occupied_chance = len(open_positions) + len(open_orders)
         if occupied_chance >= self._trading_rule.position_rule.open_position_maximum:
@@ -321,6 +319,3 @@ class ORBLongOrderValidator(OrderValidator):
             ),
         )
         self._event_manager.add(event)
-
-
-ORDER_VALIDATOR_REGISTRY = {"orb_long_order_validator": ORBLongOrderValidator}

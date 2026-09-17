@@ -1,7 +1,8 @@
 import os
 import re
-import threading
+import enum
 import time
+import threading
 import importlib
 
 
@@ -75,3 +76,10 @@ def load_class_from_path(path: str):
     module_path, class_name = path.split(":")
     module = importlib.import_module(module_path)
     return getattr(module, class_name)
+
+
+def enum_value_factory(items):
+    out = {}
+    for k, v in items:
+        out[k] = v.value if isinstance(v, enum.Enum) else v
+    return out

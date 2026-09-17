@@ -5,14 +5,14 @@ from abc import ABC, abstractmethod
 from nautilus_trader.model import InstrumentId
 
 from protocols.provider import ClockProvider
-from trading_signal.signal_manager import InstrumentSignal, SIGNAL_MANAGER
-from trading_signal.ranking import (
+from trading_signal.manager import InstrumentSignal, SIGNAL_MANAGER
+from candidate.ranking import (
     CANDIDATE_RANKING_METHOD,
     SignalResultFlat,
     RankingMetric,
 )
-from event_manager import EventManager
-from schemas import Event, EventType, EventPayload
+from event.manager import EventManager
+from event.schemas import Event, EventType, EventPayload
 
 
 class RankCandidateEvent(Event):
@@ -153,6 +153,3 @@ class ORBCandidateManager(CandidateManager):
         self._ranking_result = self._candidate_ranking_method.rank(
             self._signal_result_flat
         )
-
-
-CANDIDATE_MANAGER_REGISTRY = {"orb_candidate_manager": ORBCandidateManager}

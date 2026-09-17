@@ -8,7 +8,7 @@ from collections import deque, defaultdict
 
 from nautilus_trader.model import InstrumentId, ClientOrderId
 
-from schemas import Event, EventType, EventPayload
+from event.schemas import Event, EventType, EventPayload
 
 
 class RecordSignalRawDataEvent(Event):
@@ -18,6 +18,8 @@ class RecordSignalRawDataEvent(Event):
 
 
 def _json_default(obj: Any) -> Any:
+    if isinstance(obj, pd.Timestamp):
+        return obj.isoformat()
     if isinstance(obj, Enum):
         return obj.value
     if isinstance(obj, InstrumentId):
@@ -28,7 +30,7 @@ def _json_default(obj: Any) -> Any:
 
 
 class EventManager:
-    def __init__(self, root_path: str, backtesting_name: str):
+    def __init__(self, root_path: Path, backtesting_name: str):
         self._root_path: Path = Path(root_path)
         self._backtesting_name: str = backtesting_name
         self._events: deque = deque()
@@ -66,6 +68,7 @@ class EventManager:
                 e.payload.reference_data = None
 
             te = e.model_dump(mode="python")
+            print(te)
             te["payload"] = json.dumps(te["payload"], default=_json_default)
             records[e.created_at.date()].append(te)
 

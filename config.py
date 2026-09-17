@@ -5,7 +5,7 @@ from schemas import (
     IBConnectionPoolInfo,
     SymbolInfo,
     NautilusConfig,
-    VenueConfig,
+    VenueEnvConfig,
 )
 
 ENV_PATH = "./env/config.toml"
@@ -30,4 +30,4 @@ if PROJECT_CONFIG.flag == "paper" and PROJECT_CONFIG.proxy == "tws":
     )
 SYMBOL_CONFIG = SymbolInfo(**config["symbol"])
 NAUTILUS_CONFIG = NautilusConfig(**config["nautilus"])
-VENUE_CONFIG = VenueConfig(**config["venue"])
+VENUE_ENV_CONFIG = VenueEnvConfig(**config["venue"])

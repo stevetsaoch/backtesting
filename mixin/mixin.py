@@ -8,3 +8,8 @@ class DailyResetMixin:
 
     def _register_daily_reset(self, callback: Callable[[], None]) -> None:
         self._reset_callbacks.append(callback)
+
+
+class FileNameMixin:
+    PRESETS_PARQUET = "presets.parquet"
+    MISSIONS_PARQUET = "missions.parquet"

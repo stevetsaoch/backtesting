@@ -18,11 +18,10 @@ from protocols.provider import (
     OrderFactoryMethodProvider,
     CacheInfoProvider,
 )
-from event_manager import EventManager
-from schemas import Event, EventType, EventPayload
-
 from order.order import OrderTicket, OrderState, OrderRole
-from trading_rule_manager import TradingRulesMutable
+from trading_rule.schemas import TradingRule
+from event.manager import EventManager
+from event.schemas import Event, EventType, EventPayload
 
 
 # event
@@ -38,7 +37,7 @@ class OrderTicketGroup(BaseModel):
 class OrderTicketComposer(ABC, Generic[T_WL_CO]):
     def __init__(
         self,
-        trading_rule: TradingRulesMutable,
+        trading_rule: TradingRule,
         info_provider: T_WL_CO,
         clock_provider: ClockProvider,
         order_factory_method_provider: OrderFactoryMethodProvider,
@@ -169,10 +168,14 @@ class ORBOrderTicketComposer(OrderTicketComposer[ORBWatchlistManagerInterface]):
 
             otg.child.order_parent_order_id = p_order.client_order_id
             otg.child.order_state = OrderState.CREATED
-            otg.child.order_created_at = self._clock_provider.utc_now()
+            otg.child.order_created_at = self._clock_provider.utc_now().replace(
+                tzinfo=None
+            )
             otg.parent.order_child_order_id = c_order.client_order_id
             otg.parent.order_state = OrderState.CREATED
-            otg.parent.order_created_at = self._clock_provider.utc_now()
+            otg.parent.order_created_at = self._clock_provider.utc_now().replace(
+                tzinfo=None
+            )
             # event parent
             event_p = ComposeOrderTickEvent(
                 created_at=self._clock_provider.utc_now().replace(tzinfo=None),
@@ -306,7 +309,7 @@ class ORBOrderTicketComposer(OrderTicketComposer[ORBWatchlistManagerInterface]):
 
     def _get_intraday_realized_profit(self) -> Decimal:
         total = Decimal("0")
-        date = self._clock_provider.utc_now().date()
+        date = self._clock_provider.utc_now().replace(tzinfo=None).date()
         for position in self._cache_info_provider.positions_closed():
             if position.ts_closed is not None:
                 closed_dt = unix_nanos_to_dt(position.ts_closed)
@@ -316,7 +319,7 @@ class ORBOrderTicketComposer(OrderTicketComposer[ORBWatchlistManagerInterface]):
 
     def _get_intraday_unrealized_profit(self, instrument_id: InstrumentId) -> Decimal:
         total = Decimal("0")
-        date = self._clock_provider.utc_now().date()
+        date = self._clock_provider.utc_now().replace(tzinfo=None).date()
         open_positions = self._cache_info_provider.positions_open(
             side=self._position_side
         )
@@ -357,7 +360,9 @@ class ORBOrderTicketComposer(OrderTicketComposer[ORBWatchlistManagerInterface]):
             order_ticket.order = order
             order_ticket.order_client_order_id = order.client_order_id
             order_ticket.order_state = OrderState.CREATED
-            order_ticket.order_created_at = self._clock_provider.utc_now()
+            order_ticket.order_created_at = self._clock_provider.utc_now().replace(
+                tzinfo=None
+            )
             order_ticket.is_forced_close_order = True
             ots.append(order_ticket)
         return ots
@@ -392,8 +397,3 @@ class ForcedCloseOrderComposer:
         order_ticket.reduce_only = True
         order_ticket.quantity = parent_order_ticket.quantity
         return order_ticket
-
-
-ORDER_COMPOSER_REGISTRY: dict[str, type[OrderTicketComposer]] = {
-    "orb_order_composer": ORBOrderTicketComposer
-}
