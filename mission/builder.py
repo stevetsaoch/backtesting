@@ -1,3 +1,4 @@
+import datetime
 from decimal import Decimal
 
 from nautilus_trader.model import Venue, Currency, Money, InstrumentId, BarType
@@ -90,6 +91,61 @@ class MissionBuilder:
         self._managers = self._build_manager_config(mission_inbound.manager_preset)
         self._venue = self._build_venue_config(mission_inbound.venue_preset)
         self._catalog = self._build_catalog_config(mission_inbound.catalog_preset)
+        self._backtesting_config = self._build_backtesting_config(
+            mission_inbound.backtesting_preset
+        )
+        mission_outbound = MissionOutbound(
+            name=mission_inbound.name,
+            iis=mission_inbound.iis,
+            os=mission_inbound.os,
+            cycle=mission_inbound.cycle,
+            is_finished=mission_inbound.is_finished,
+            indicator_fields=self._indicator_fields,
+            indicator_metas=self._indicator_metas,
+            trading_signal_factors=self._trading_signal_factors,
+            trading_signal_metas=self._trading_signal_metas,
+            trading_rule=self._trading_rule,
+            candidate_ranking_config=self._candidate_ranking_config,
+            managers=self._managers,
+            venue=self._venue,
+            catalog=self._catalog,
+            backtesting_config=self._backtesting_config,
+        ).model_copy(deep=True)
+
+        self._reset()
+        return mission_outbound
+
+    def debug_build(
+        self, mission_inbound: MissionInbound, symbol_size: int
+    ) -> MissionOutbound:
+        for indicator_field_preset in mission_inbound.indicator_field_presets:
+            self._indicator_fields.append(
+                self._build_indicator_fields(indicator_field_preset)
+            )
+        for indicator_meta_preset in mission_inbound.indicator_meta_presets:
+            self._indicator_metas.append(
+                self._build_indicator_meta(indicator_meta_preset)
+            )
+
+        for trading_signal_factor in mission_inbound.trading_signal_factor_presets:
+            self._trading_signal_factors.append(
+                self._build_trading_signal_factor(trading_signal_factor)
+            )
+        for trading_signal_meta in mission_inbound.trading_signal_meta_presets:
+            self._trading_signal_metas.append(
+                self._build_trading_signal_meta(trading_signal_meta)
+            )
+        self._trading_rule = self._build_trading_rule(
+            mission_inbound.trading_rule_preset
+        )
+        self._candidate_ranking_config = self._build_candidate_ranking_config(
+            mission_inbound.candidate_ranking_preset
+        )
+        self._managers = self._build_manager_config(mission_inbound.manager_preset)
+        self._venue = self._build_venue_config(mission_inbound.venue_preset)
+        self._catalog = self._debug_build_catalog_config(
+            mission_inbound.catalog_preset, symbol_size=symbol_size
+        )
         self._backtesting_config = self._build_backtesting_config(
             mission_inbound.backtesting_preset
         )
@@ -331,17 +387,31 @@ class MissionBuilder:
             ],
             fill_model=fill_model,
             fee_model=fee_model,
-            lantency_model=latency_model,
+            latency_model=latency_model,
         )
 
     def _build_catalog_config(self, preset: CatalogPresetInbound) -> CatalogConfig:
         catalog = ParquetDataCatalog(path=preset.catalog_path)
 
+        warmup_data_start_delta: datetime.timedelta
+        if preset.warmup_data_delta_preset.unit == "day":
+            warmup_data_start_delta = datetime.timedelta(
+                days=preset.warmup_data_delta_preset.value
+            )
+        elif preset.warmup_data_delta_preset.unit == "minute":
+            warmup_data_start_delta = datetime.timedelta(
+                minutes=preset.warmup_data_delta_preset.value
+            )
+        elif preset.warmup_data_delta_preset.unit == "second":
+            warmup_data_start_delta = datetime.timedelta(
+                seconds=preset.warmup_data_delta_preset.value
+            )
+
         catac = CatalogConfig(
             data_start_datetime=preset.data_start_datetime,
             data_end_datetime=preset.data_end_datetime,
             warmup_data_start_datetime=preset.data_start_datetime
-            + preset.warmup_data_delta,
+            + warmup_data_start_delta,
             catalog=ParquetDataCatalog(path=preset.catalog_path),
             instrument_ids=[
                 f"{symbol}.{str(self._venue.venue)}" for symbol in preset.symbols
@@ -372,6 +442,67 @@ class MissionBuilder:
                 ],
                 instrument_ids=[
                     f"{symbol}.{str(self._venue.venue)}" for symbol in preset.symbols
+                ],
+                start=preset.data_start_datetime,
+                end=preset.data_end_datetime,
+            ),
+        )
+        return catac
+
+    def _debug_build_catalog_config(
+        self, preset: CatalogPresetInbound, symbol_size: int
+    ) -> CatalogConfig:
+        catalog = ParquetDataCatalog(path=preset.catalog_path)
+        symbols = preset.symbols[0:symbol_size]
+
+        # warmup data delta
+        warmup_data_start_delta: datetime.timedelta
+        if preset.warmup_data_delta_preset.unit == "day":
+            warmup_data_start_delta = datetime.timedelta(
+                days=preset.warmup_data_delta_preset.value
+            )
+        elif preset.warmup_data_delta_preset.unit == "minute":
+            warmup_data_start_delta = datetime.timedelta(
+                minutes=preset.warmup_data_delta_preset.value
+            )
+        elif preset.warmup_data_delta_preset.unit == "second":
+            warmup_data_start_delta = datetime.timedelta(
+                seconds=preset.warmup_data_delta_preset.value
+            )
+
+        catac = CatalogConfig(
+            data_start_datetime=preset.data_start_datetime,
+            data_end_datetime=preset.data_end_datetime,
+            warmup_data_start_datetime=preset.data_start_datetime
+            + warmup_data_start_delta,
+            catalog=ParquetDataCatalog(path=preset.catalog_path),
+            instrument_ids=[f"{symbol}.{str(self._venue.venue)}" for symbol in symbols],
+            instruments=catalog.instruments(
+                instrument_ids=[
+                    f"{symbol}.{str(self._venue.venue)}" for symbol in symbols
+                ]
+            ),
+            bar_types={
+                InstrumentId.from_str(f"{symbol}.{str(self._venue.venue)}"): [
+                    BarType.from_str(
+                        self._to_bar_type_string(
+                            bar_preset=bp, symbol=symbol, venue=str(self._venue.venue)
+                        )
+                    )
+                    for bp in preset.bar_presets
+                ]
+                for symbol in symbols
+            },
+            bars=catalog.bars(
+                bar_types=[
+                    self._to_bar_type_string(
+                        bar_preset=bp, symbol=symbol, venue=str(self._venue.venue)
+                    )
+                    for bp in preset.bar_presets
+                    for symbol in symbols
+                ],
+                instrument_ids=[
+                    f"{symbol}.{str(self._venue.venue)}" for symbol in symbols
                 ],
                 start=preset.data_start_datetime,
                 end=preset.data_end_datetime,

@@ -11,11 +11,6 @@ class ConsolidationAndBreakoutIndicatorManageActorConfig(
 class ConsolidationAndBreakoutIndicatorManageActor(
     BaseCustomActor[ORBWatchlistManagerInterface]
 ):
-    def __init__(
-        self,
-    ):
-        pass
-
     def _post_on_bar(self, event):
         """
         excute something after every round of on_bar finished

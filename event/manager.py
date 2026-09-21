@@ -68,7 +68,6 @@ class EventManager:
                 e.payload.reference_data = None
 
             te = e.model_dump(mode="python")
-            print(te)
             te["payload"] = json.dumps(te["payload"], default=_json_default)
             records[e.created_at.date()].append(te)
 

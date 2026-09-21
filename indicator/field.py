@@ -18,8 +18,9 @@ TYPE_REGISTRY: dict[str, type] = {
 
 # fields
 class IndicatorField(ABC):
-    def __init__(self, bar_spec_requirement: str):
+    def __init__(self, bar_spec_requirement: str, bar_buffer_size: int | None):
         self.bar_spec_requirement = bar_spec_requirement
+        self.bar_buffer_size = bar_buffer_size
 
     def update(
         self, bar: Bar
@@ -256,11 +257,10 @@ class IntradayAmplitudeField(IndicatorField):
 
 
 class IntradayATRField(IndicatorField):
-    def __init__(self, bar_buffer_size: int, *args, **kwargs):
+    def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._value_default = float("-inf")
         self._value = float("-inf")
-        self.bar_buffer_size = bar_buffer_size
         self.bars = deque(maxlen=self.bar_buffer_size)
         self.atr_n = deque(maxlen=self.bar_buffer_size)
 

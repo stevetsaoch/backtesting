@@ -21,6 +21,9 @@ def build_fields(configs: list[IndicatorFieldConfig]) -> dict[str, IndicatorFiel
         dep_fields = {dep_name: fields[dep_name] for dep_name in cfg.depends_on}
         params = cfg.params if cfg.params else {}
         fields[name] = cls(
-            **dep_fields, **params, bar_spec_requirement=cfg.bar_spec_requirement
+            **dep_fields,
+            **params,
+            bar_spec_requirement=cfg.bar_spec_requirement,
+            bar_buffer_size=cfg.bar_buffer_size,
         )
     return fields

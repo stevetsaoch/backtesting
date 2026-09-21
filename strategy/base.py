@@ -1,6 +1,6 @@
 import datetime
 from abc import ABC, abstractmethod
-from typing import Generic
+from typing import Generic, Callable
 
 from nautilus_trader.config import StrategyConfig
 from nautilus_trader.trading.strategy import Strategy
@@ -65,6 +65,7 @@ class BaseCustomStrategy(Strategy, ABC, Generic[T_WL_CO]):
         # event
     ):
         super().__init__(config)
+        self._reset_callbacks: list[Callable[[], None]] = []
         self._name = name
         self._bar_types = bar_types
         self._data_start_datetime = data_start_datetime
@@ -123,7 +124,7 @@ class BaseCustomStrategy(Strategy, ABC, Generic[T_WL_CO]):
         )
 
         # order
-        self._order_validator = ORDER_VALIDATOR_REGISTRY[self.config.order_validator](
+        self._order_validator = ORDER_VALIDATOR_REGISTRY[self._order_validator_name](
             trading_rule=self._trading_rule,
             cache_info_provider=self.cache,
             clock_provider=self.clock,
@@ -133,7 +134,7 @@ class BaseCustomStrategy(Strategy, ABC, Generic[T_WL_CO]):
             event_manager=self._event_manager, clock_provider=self.clock
         )
         self._order_composer: OrderTicketComposer = ORDER_COMPOSER_REGISTRY[
-            self.config.order_composer
+            self._order_composer_name
         ](
             trading_rule=self._trading_rule,
             info_provider=self._watchlist_manager,
@@ -145,7 +146,7 @@ class BaseCustomStrategy(Strategy, ABC, Generic[T_WL_CO]):
 
         # position
         self._position_evaluator = POSITION_EVALUATOR_REGISTRY[
-            self.config.position_evaluator
+            self._position_evaluator_name
         ](
             trading_rule=self._trading_rule,
             signal_manager=self._signal_manager,
@@ -173,14 +174,14 @@ class BaseCustomStrategy(Strategy, ABC, Generic[T_WL_CO]):
         self._register_daily_reset(self._position_evaluator.reset)
         self._register_daily_reset(self._event_manager.save_and_reset)
 
-        for bts in self.config.bar_types.values():
+        for bts in self._bar_types.values():
             for bt in bts:
                 self.subscribe_bars(bt)
 
         # reset
         self.clock.set_timer(
             name="daily_reset",
-            start_time=self.config.data_start_datetime.replace(
+            start_time=self._data_start_datetime.replace(
                 hour=23, minute=59, second=59, microsecond=0
             ),
             interval=datetime.timedelta(days=1),
@@ -276,7 +277,7 @@ class BaseCustomStrategy(Strategy, ABC, Generic[T_WL_CO]):
         )
 
     def on_stop(self):
-        print(self._order_ticket_manager._books.keys())
+        pass
 
     def _daily_reset(self, event):
         for cb in self._reset_callbacks:
@@ -286,6 +287,9 @@ class BaseCustomStrategy(Strategy, ABC, Generic[T_WL_CO]):
         # session
         self._current_session_datetime: datetime.datetime | None = None
         self._current_session_bars: list[Bar] = []
+
+    def _register_daily_reset(self, callback: Callable[[], None]) -> None:
+        self._reset_callbacks.append(callback)
 
     @abstractmethod
     def _post_on_bar(self, event): ...

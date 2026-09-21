@@ -5,8 +5,8 @@ from itertools import product
 from pydantic import BaseModel
 
 from preset.schemas import PresetOutbound
-from schemas import SweepConfig
 from mixin.mixin import FileNameMixin
+from schemas import SweepConfig
 
 
 class PresetRepository(FileNameMixin):

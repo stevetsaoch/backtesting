@@ -473,7 +473,7 @@ class VenueConfig(BaseModel):
     starting_balances: list[Money]
     fill_model: FillModel
     fee_model: FeeModel
-    lantency_model: LatencyModel
+    latency_model: LatencyModel
 
 
 @dataclass(frozen=True)
@@ -532,10 +532,21 @@ class CatalogConfig(BaseModel):
     bars: list[Bar]
 
 
+class WarmupDataDatetimeDeltaPresetInbound(BaseModel):
+    unit: Literal["day", "second", "minute"]
+    value: int
+
+
+class WarmupDataDatetimeDeltaPresetOutbound(BaseModel):
+    unit: Literal["day", "second", "minute"]
+    value: int
+
+
 class CatalogPresetInbound(BaseModel):
+
     data_start_datetime: datetime.datetime
     data_end_datetime: datetime.datetime
-    warmup_data_delta: datetime.timedelta
+    warmup_data_delta_preset: WarmupDataDatetimeDeltaPresetInbound
     catalog_path: str
     bar_presets: list[BarPresetInbound]
     symbols: list[str]
@@ -544,7 +555,7 @@ class CatalogPresetInbound(BaseModel):
 class CatalogPresetOutbound(BaseModel):
     data_start_datetime: datetime.datetime
     data_end_datetime: datetime.datetime
-    warmup_data_delta: datetime.timedelta
+    warmup_data_delta_preset: WarmupDataDatetimeDeltaPresetOutbound
     catalog_path: str
     bar_presets: list[BarPresetOutbound]
 

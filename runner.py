@@ -8,6 +8,7 @@ from nautilus_trader.config import (
     LoggingConfig,
 )
 from nautilus_trader.model import Bar
+from nautilus_trader.analysis import create_tearsheet
 
 from watchlist.interfaces import WatchlistManagerProvider
 from preset.registry import PresetRegistry
@@ -51,7 +52,6 @@ class BacktestingRunner:
         self._time_bars_timestamp_on_close = time_bars_timestamp_on_close
         self._time_bars_build_with_no_updates = time_bars_build_with_no_updates
         self._time_bars_skip_first_non_full_bar = time_bars_skip_first_non_full_bar
-        self._engine: BacktestEngine = self._build_engine()
         self._mission_current_config: MissionOutbound | None = None
 
         # mission
@@ -66,22 +66,84 @@ class BacktestingRunner:
         self._strategy: BaseCustomStrategy
 
     def run(self):
-        mission_config = self._mission_manager.build_configs(self._mission_file_path)
-        if mission_config is None:
-            pass
-        else:
+        for mission_config in self._mission_manager.build_configs(
+            self._mission_file_path
+        ):
+            engine = self._build_engine()
             self._mission_current_config = mission_config
             event_manager = EventManager(
-                root_path=self._mission_file_path.parent,
+                root_path=self._mission_file_path,
                 backtesting_name=mission_config.name,
             )
             self._actor = self._init_actor(
                 event_manager=event_manager, mission_config=mission_config
             )
-            self._strategy = self._init_strategy()
-            self._engine.add_actor(self._actor)
-            self._engine.add_strategy(self._strategy)
-            self._engine.run()
+            self._strategy = self._init_strategy(
+                event_manager=event_manager,
+                mission_config=mission_config,
+                watchlist_manager_provider=self._actor,
+            )
+            # engine
+            self._add_venue(engine=engine, venue_config=mission_config.venue)
+            self._add_instrument(
+                engine=engine, instruments=mission_config.catalog.instruments
+            )
+            self._add_data(engine=engine, bars=mission_config.catalog.bars)
+            engine.add_actor(self._actor)
+            engine.add_strategy(self._strategy)
+            engine.run()
+            # update mission status
+            self._mission_manager.update_mission_status(
+                self._mission_file_path, mission_config.name
+            )
+            # save report
+            self._save_report(
+                engine=engine,
+                mission_path=self._mission_file_path,
+                mission_name=mission_config.name,
+            )
+
+    def debug_run(self, symbol_size: int, rounds: int):
+        current_round = 1
+        for mission_config in self._mission_manager.debug_build_configs(
+            self._mission_file_path, symbol_size=symbol_size
+        ):
+            engine = self._build_engine()
+            self._mission_current_config = mission_config
+            event_manager = EventManager(
+                root_path=self._mission_file_path,
+                backtesting_name=mission_config.name,
+            )
+            self._actor = self._init_actor(
+                event_manager=event_manager, mission_config=mission_config
+            )
+            self._strategy = self._init_strategy(
+                event_manager=event_manager,
+                mission_config=mission_config,
+                watchlist_manager_provider=self._actor,
+            )
+            # engine
+            self._add_venue(engine=engine, venue_config=mission_config.venue)
+            self._add_instrument(
+                engine=engine, instruments=mission_config.catalog.instruments
+            )
+            self._add_data(engine=engine, bars=mission_config.catalog.bars)
+            engine.add_actor(self._actor)
+            engine.add_strategy(self._strategy)
+            engine.run()
+            # update mission status
+            self._mission_manager.update_mission_status(
+                self._mission_file_path, mission_config.name
+            )
+            # save report
+            self._save_report(
+                engine=engine,
+                mission_path=self._mission_file_path,
+                mission_name=mission_config.name,
+            )
+            current_round += 1
+            if current_round > rounds:
+                break
 
     def _build_engine(self):
         engine = BacktestEngine(
@@ -97,15 +159,15 @@ class BacktestingRunner:
         )
         return engine
 
-    def _add_venue(self, venue_config: VenueConfig):
-        self._engine.add_venue(**venue_config.model_dump())
+    def _add_venue(self, engine: BacktestEngine, venue_config: VenueConfig):
+        engine.add_venue(**venue_config.model_dump())
 
-    def _add_instrument(self, instruments: list[str]):
+    def _add_instrument(self, engine: BacktestEngine, instruments: list[str]):
         for ins in instruments:
-            self._engine.add_instrument(ins)
+            engine.add_instrument(ins)
 
-    def _add_data(self, bars: list[Bar]):
-        self._engine.add_data(bars)
+    def _add_data(self, engine: BacktestEngine, bars: list[Bar]):
+        engine.add_data(bars)
 
     def _init_actor(
         self, event_manager: EventManager, mission_config: MissionOutbound
@@ -154,37 +216,8 @@ class BacktestingRunner:
 
         return strategy
 
-
-if __name__ == "__main__":
-    from preset.repository import PresetRepository
-    from preset.registry import PresetRegistry
-
-    preset_registry = PresetRegistry(presets_dir=Path("./preset/presets"))
-    preset_registry.load_all()
-
-    file_dir = Path("/Volumes/backtesting_main/record")
-    preset_repository = PresetRepository(
-        root_dir=file_dir, preset_pairs=preset_registry.all()
-    )
-    preset_repository.save_presets()
-    #
-    from mission.manager import MissionManager
-    from mission.builder import MissionBuilder
-
-    mm = MissionManager(
-        builder=MissionBuilder(),
-        record_root_path=file_dir,
-        preset_name="consolidation_and_breakout_v1",
-        mission_period=1,
-        mission_period_unit="month",
-        iis_period=3,
-        os_period=1,
-        symbol_file_path=Path("/Volumes/backtesting_main/data/_missions/10_20_1min"),
-        symbol_file_name_pattern=" 00:00:00|1|minute|23|day.parquet",
-    )
-    mm.build_missions()
-    mm.build_configs(
-        mission_file_path=Path(
-            "/Volumes/backtesting_main/record/consolidation_and_breakout_v1/consolidation_and_breakout_v1_1/missions.parquet"
-        )
-    )
+    def _save_report(
+        self, engine: BacktestEngine, mission_path: Path, mission_name: str
+    ):
+        report_path = mission_path / f"{mission_name}.html"
+        create_tearsheet(engine=engine, output_path=str(report_path))

@@ -15,8 +15,8 @@ class RegisteredPreset:
 
 
 class PresetRegistry:
-    def __init__(self, presets_dir: Path):
-        self._presets_dir = presets_dir
+    def __init__(self, presets_path: Path):
+        self._presets_path = presets_path
         self._by_name: dict[str, RegisteredPreset] = {}
 
     def load_all(self) -> None:
@@ -37,7 +37,7 @@ class PresetRegistry:
                     self._register(name, preset, py_file, var_name)
 
     def _iter_preset_files(self) -> Iterator[Path]:
-        for py_file in sorted(self._presets_dir.glob("*.py")):
+        for py_file in sorted(self._presets_path.glob("*.py")):
             if py_file.name.startswith("_"):
                 continue
             yield py_file

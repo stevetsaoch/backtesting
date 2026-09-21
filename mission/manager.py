@@ -1,3 +1,4 @@
+import os
 import duckdb
 import calendar
 import datetime
@@ -27,6 +28,7 @@ from schemas import (
     VenuePresetInbound,
     ManagerPresetInbound,
     BacktestingPresetInbound,
+    WarmupDataDatetimeDeltaPresetInbound,
 )
 
 
@@ -38,7 +40,7 @@ class MissionManager(FileNameMixin):
     def __init__(
         self,
         builder: MissionBuilder,
-        record_root_path: Path,
+        record_root_dir: Path,
         preset_name: str,
         mission_period: int,
         mission_period_unit: Literal["month"],
@@ -48,12 +50,12 @@ class MissionManager(FileNameMixin):
         symbol_file_name_pattern: str,
     ):
         self._builder = builder
-        self._record_root_path = record_root_path
+        self._record_root_dir = record_root_dir
         self._preset_name = preset_name
-        self._preset_root = self._record_root_path / self._preset_name
+        self._preset_root = self._record_root_dir / self._preset_name
         # outbound
         self._outbound_presets_path = (
-            self._record_root_path / self._preset_name / self.PRESETS_PARQUET
+            self._record_root_dir / self._preset_name / self.PRESETS_PARQUET
         )
         self._outbound_presets: list[PresetOutbound] = self._read_outbound_presets()
         self._mission_path_outbound_preset_pair: dict[Path, PresetOutbound] = (
@@ -72,9 +74,6 @@ class MissionManager(FileNameMixin):
         # symbol
         self._symbol_file_path = symbol_file_path
         self._symbol_file_name_pattern = symbol_file_name_pattern
-
-        # config
-        self._config_generator = None
 
     def build_missions(self):
         self._init_mission_dir()
@@ -105,6 +104,13 @@ class MissionManager(FileNameMixin):
                 end=catalog_preset.data_end_datetime,
                 months=self._mission_period,
             )
+            # warmup data delta
+            warmup_data_delta_preset = (
+                WarmupDataDatetimeDeltaPresetInbound.model_validate(
+                    catalog_preset.warmup_data_delta_preset.model_dump()
+                )
+            )
+
             inbound_catalog_presets = []
             for month_pair in month_pairs:
                 start = month_pair[0]
@@ -112,7 +118,7 @@ class MissionManager(FileNameMixin):
                 inbound_catalog_preset = CatalogPresetInbound(
                     data_start_datetime=month_pair[0],
                     data_end_datetime=month_pair[1],
-                    warmup_data_delta=catalog_preset.warmup_data_delta,
+                    warmup_data_delta_preset=warmup_data_delta_preset,
                     symbols=symbols,
                     catalog_path=catalog_preset.catalog_path,
                     bar_presets=[
@@ -223,21 +229,44 @@ class MissionManager(FileNameMixin):
                 )
 
     def build_configs(self, mission_file_path: Path):
-        if self._config_generator is None:
-            self._config_generator = self._build_configs_gen(mission_file_path)
-
-        return next(self._config_generator, None)
-
-    def _build_configs_gen(self, mission_file_path: Path):
         missions = self._read_missions(mission_file_path)
         for index, mission in missions.iterrows():
             mission_inbound = MissionInbound.model_validate(mission.to_dict())
             mission_outbound = self._builder.build(mission_inbound)
             yield mission_outbound
 
-    def _read_missions(self, file_path: Path):
+    def debug_build_configs(self, mission_file_path: Path, symbol_size: int):
+        missions = self._read_missions(mission_file_path)
+        for index, mission in missions.iterrows():
+            mission_inbound = MissionInbound.model_validate(mission.to_dict())
+            mission_outbound = self._builder.debug_build(
+                mission_inbound, symbol_size=symbol_size
+            )
+            yield mission_outbound
+
+    def update_mission_status(self, mission_file_path: Path, mission_name: str):
+        tmp_file_name = f"tmp.{self.MISSIONS_PARQUET}"
+        con = duckdb.connect()
+        con.execute(
+            f"""
+            COPY (
+                SELECT * REPLACE (
+                    CASE WHEN name = ? THEN true ELSE is_finished END AS is_finished
+                )
+                FROM read_parquet('{mission_file_path / self.MISSIONS_PARQUET}')
+            ) TO '{mission_file_path/tmp_file_name}' (FORMAT PARQUET);
+            """,
+            [mission_name],
+        )
+
+        os.replace(
+            mission_file_path / tmp_file_name, mission_file_path / self.MISSIONS_PARQUET
+        )
+
+    def _read_missions(self, mission_file_path: Path):
         unfinished_missions = pd.read_parquet(
-            file_path, filters=[("is_finished", "=", False)]
+            mission_file_path / self.MISSIONS_PARQUET,
+            filters=[("is_finished", "=", False)],
         )
         return unfinished_missions
 

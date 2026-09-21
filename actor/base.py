@@ -50,13 +50,13 @@ class BaseCustomActor(Actor, ABC, Generic[T_WL_CO]):
         self._watchlist_manager: T_WL_CO
 
     def on_start(self):
-        for bts in self.config.bar_types.values():
+        for bts in self._bar_types.values():
             for bt in bts:
                 self.subscribe_bars(bt)
 
         # watchlist manager
         self._watchlist_manager: T_WL_CO = WATCHLIST_MANAGER_REGISTRY[
-            self.config.watchlist_manager
+            self._watchlist_manager_name
         ](
             indicator_meta_set=self._indicator_meta_set,
             snapshot_time=self._snapshot_time,
@@ -95,7 +95,7 @@ class BaseCustomActor(Actor, ABC, Generic[T_WL_CO]):
             bar_spec_requirement_from_fields = set(
                 [bs.bar_spec_requirement for bs in indm.field_configs]
             )
-            for iid, bts in self.config.bar_types.items():
+            for iid, bts in self._bar_types.items():
                 bts_spec = [f"{b.spec.step}-{b.spec.aggregation}" for b in bts]
                 if set(bts_spec) in bar_spec_requirement_from_fields:
                     raise Exception(
