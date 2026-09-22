@@ -19,6 +19,9 @@ class TradingRuleManager(ABC):
 
 
 class ORBTradingRuleManager(TradingRuleManager):
+    def update_remaining_trade(self, size: int):
+        self._trading_rule.risk_rule.remaining_trade -= Decimal(str(size))
+
     def update(self):
         # balance
         last_balance = self._account_info_provider.balance_total(
@@ -67,4 +70,8 @@ class ORBTradingRuleManager(TradingRuleManager):
         self._trading_rule.risk_rule.risk_value_minimum = (
             self._trading_rule.portfolio_info.balance
             * self._trading_rule.risk_rule.risk_value_ratio_minimum
+        )
+        # risk remaining trade
+        self._trading_rule.risk_rule.remaining_trade = (
+            self._trading_rule.position_rule.open_position_maximum
         )

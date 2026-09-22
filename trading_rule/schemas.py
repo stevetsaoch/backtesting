@@ -57,6 +57,7 @@ class RiskRule(BaseModel):
     )
     risk_value_ratio_minimum: Decimal
     risk_value_minimum: Decimal  # risk_value_ratio * balance, update frequence: daily
+    remaining_trade: Decimal
 
 
 class SessionRule(BaseModel):
@@ -97,6 +98,7 @@ class TradingRulePresetInbound(BaseModel):
 
     # risk
     tradable_balance_ratio: str
+    remaining_trade: str
     intraday_risk_ratio: str
     target_profit_minimum: str
     cost_ratio_maximum: str
@@ -131,6 +133,7 @@ class TradingRulePresetOutbound(BaseModel):
 
     # risk
     tradable_balance_ratio: str
+    remaining_trade: str
     intraday_risk_ratio: str
     target_profit_minimum: str
     cost_ratio_maximum: str

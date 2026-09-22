@@ -190,6 +190,13 @@ class ORBLongOrderValidator(OrderValidator):
             return True
 
     @OrderValidator.validation_result(target_attr="_pre_order_validation_result")
+    def _validate_remaining_trade(self, instrument_id: InstrumentId):
+        if self._trading_rule.risk_rule.remaining_trade == Decimal(str(0)):
+            return False
+        else:
+            return True
+
+    @OrderValidator.validation_result(target_attr="_pre_order_validation_result")
     def _validate_available_chance(self, instrument_id: InstrumentId):
         open_orders = self._cache_info_provider.orders_open(side=self._order_side)
 
@@ -286,6 +293,7 @@ class ORBLongOrderValidator(OrderValidator):
         for instrument_id in instrument_ids:
             self._validate_trading_session(instrument_id)
             self._validate_kill_switch(instrument_id)
+            self._validate_remaining_trade(instrument_id)
             self._validate_available_chance(instrument_id)
             self._validate_instrument_id_not_present_in_open_orders(instrument_id)
             self._validate_instrument_id_not_present_in_open_positions(instrument_id)

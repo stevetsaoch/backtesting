@@ -265,6 +265,7 @@ class BaseCustomStrategy(Strategy, ABC, Generic[T_WL_CO]):
             event.instrument_id,
             established_at=self.clock.utc_now().replace(tzinfo=None),
         )
+        self._trading_rule_manager.update_remaining_trade(size=1)
 
     def on_position_closed(self, event: PositionClosed) -> None:
         datetime = self.clock.utc_now().replace(tzinfo=None)

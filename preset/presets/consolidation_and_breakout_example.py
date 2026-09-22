@@ -193,6 +193,7 @@ trading_rule_preset = TradingRulePresetOutbound(
     market_close_at=datetime.time(16, 0, 0),
     trading_start_at=datetime.time(10, 30, 0),
     forced_close_at=datetime.time(15, 30, 0),
+    remaining_trade="2.0",
     sweep=None,
 )
 catalog_preset = CatalogPresetOutbound(

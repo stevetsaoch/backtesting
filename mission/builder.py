@@ -348,6 +348,7 @@ class MissionBuilder:
             cost_efficiency_value_minimum=cost_efficiency_value_minimum,
             risk_value_ratio_minimum=risk_value_ratio_minimum,
             risk_value_minimum=risk_value_minimum,
+            remaining_trade=Decimal(preset.remaining_trade),
         )
         return TradingRule(
             portfolio_info=pfi,
