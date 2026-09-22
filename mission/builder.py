@@ -333,7 +333,7 @@ class MissionBuilder:
             else fee.maximum_fee_ratio_per_order * order_value_maximum
         ) * Decimal(str(2.0))
         cost_ratio_maximum = Decimal(preset.cost_ratio_maximum)
-        cost_efficiency_value_minimun = cost_estimated_per_trade / cost_ratio_maximum
+        cost_efficiency_value_minimum = cost_estimated_per_trade / cost_ratio_maximum
         risk_value_ratio_minimum = Decimal(preset.risk_value_ratio_minimum)
         risk_value_minimum = pfi.balance * risk_value_ratio_minimum
 
@@ -345,7 +345,7 @@ class MissionBuilder:
             target_profit_minimum=target_profit_minimum,
             cost_estimated_per_trade=cost_estimated_per_trade,
             cost_ratio_maximum=cost_ratio_maximum,
-            cost_efficiency_value_minimum=cost_efficiency_value_minimun,
+            cost_efficiency_value_minimum=cost_efficiency_value_minimum,
             risk_value_ratio_minimum=risk_value_ratio_minimum,
             risk_value_minimum=risk_value_minimum,
         )
@@ -364,7 +364,7 @@ class MissionBuilder:
     def _build_venue_config(self, preset: VenuePresetInbound) -> VenueConfig:
         fee_model_cls = load_class_from_path(preset.fee_model_path)
         fee_config_cls = load_class_from_path(preset.fee_model_config_path)
-        fee_model = fee_model_cls(config=fee_config_cls)
+        fee_model = fee_model_cls(config=fee_config_cls())
 
         fill_model = FillModel(
             prob_fill_on_limit=preset.prob_fill_on_limit,

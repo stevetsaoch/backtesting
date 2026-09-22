@@ -120,7 +120,7 @@ class PercentileRanking(CandidateRankingMethod):
     def rank(self, df: pd.DataFrame) -> RankingMetric:
         df[self.COL_FACTOR_RANKING] = df.groupby(
             [self.COL_SIGNAL, self.COL_FACTOR], group_keys=False
-        ).apply(self._percentile_ranking)
+        )[self.COL_FACTOR_VALUE].transform(self._percentile_ranking)
         self._ranking_metric.ranked = df.to_dict()
 
         signal_scores = (
@@ -141,9 +141,7 @@ class PercentileRanking(CandidateRankingMethod):
         factor = group.name[1]
         direction = self._factor_ranking_dict[factor]["percentile"]["ascending"]
         method = self._factor_ranking_dict[factor]["percentile"]["tie_breaking_method"]
-        return group[self.COL_FACTOR_VALUE].rank(
-            pct=True, method=method, ascending=direction
-        )
+        return group.rank(pct=True, method=method, ascending=direction)
 
     def _signal_internal_aggregation(self, group: pd.DataFrame) -> float:
         signal_name = group.name[1]

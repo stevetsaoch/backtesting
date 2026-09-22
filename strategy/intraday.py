@@ -10,7 +10,6 @@ class ConsolidationAndBreakoutConfig(BaseCustomStrategyConfig, frozen=True):
 class ConsolidationAndBreakout(BaseCustomStrategy):
 
     def _post_on_bar(self, event):
-        # update
         # update signal
         self._signal_manager.update_signals(self._current_session_bars)
 

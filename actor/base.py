@@ -6,7 +6,7 @@ from collections import defaultdict
 from nautilus_trader.common.actor import Actor
 from nautilus_trader.config import ActorConfig
 from nautilus_trader.indicators.base import Indicator
-from nautilus_trader.model import BarType, InstrumentId
+from nautilus_trader.model import Bar, BarType, InstrumentId
 
 from indicator.schemas import IndicatorMeta
 from event.manager import EventManager
@@ -78,8 +78,19 @@ class BaseCustomActor(Actor, ABC, Generic[T_WL_CO]):
         self._register_daily_reset(self._watchlist_manager.reset)
         self._register_indicator()
 
-    @abstractmethod
-    def _post_on_bar(self, event): ...
+    def on_bar(self, bar: Bar):
+        current_datetime = self.clock.utc_now()
+        if (
+            self._current_session_datetime == None
+            or self._current_session_datetime < current_datetime
+        ):
+
+            self._current_session_datetime = current_datetime
+            self.clock.set_time_alert(
+                name="post_on_bar",
+                alert_time=current_datetime + datetime.timedelta(seconds=2),
+                callback=self._post_on_bar,
+            )
 
     def get_watchlist_manager(self) -> T_WL_CO:
         return self._watchlist_manager
@@ -120,10 +131,11 @@ class BaseCustomActor(Actor, ABC, Generic[T_WL_CO]):
                 for bt in t_bts:
                     self.register_indicator_for_bars(bt, t_ind)
 
-    def _register_daily_reset(self, callback: Callable[[], None]) -> None:
-        self._reset_callbacks.append(callback)
+    @abstractmethod
+    def _post_on_bar(self, event): ...
 
-    def _daily_reset(self, event):
-        for cb in self._reset_callbacks:
-            cb()
-        self._current_session_time = None
+    @abstractmethod
+    def _register_daily_reset(self, callback: Callable[[], None]) -> None: ...
+
+    @abstractmethod
+    def _daily_reset(self, event): ...

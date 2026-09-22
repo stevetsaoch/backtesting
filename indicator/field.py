@@ -13,6 +13,7 @@ TYPE_REGISTRY: dict[str, type] = {
     "bool": bool,
     "datetime.date": datetime.date,
     "datetime.time": datetime.time,
+    "datetime.datetime": datetime.datetime,
 }
 
 
