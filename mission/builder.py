@@ -64,7 +64,7 @@ class MissionBuilder:
         self._catalog: CatalogConfig
         self._backtesting_config: BacktestingConfig
 
-    def build(self, mission_inbound: MissionInbound) -> MissionOutbound:
+    def mission_build(self, mission_inbound: MissionInbound) -> MissionOutbound:
         for indicator_field_preset in mission_inbound.indicator_field_presets:
             self._indicator_fields.append(
                 self._build_indicator_fields(indicator_field_preset)
@@ -96,8 +96,8 @@ class MissionBuilder:
         )
         mission_outbound = MissionOutbound(
             name=mission_inbound.name,
-            iis=mission_inbound.iis,
-            os=mission_inbound.os,
+            is_=mission_inbound.is_,
+            oos=mission_inbound.oos,
             cycle=mission_inbound.cycle,
             is_finished=mission_inbound.is_finished,
             indicator_fields=self._indicator_fields,
@@ -151,8 +151,8 @@ class MissionBuilder:
         )
         mission_outbound = MissionOutbound(
             name=mission_inbound.name,
-            iis=mission_inbound.iis,
-            os=mission_inbound.os,
+            is_=mission_inbound.is_,
+            oos=mission_inbound.oos,
             cycle=mission_inbound.cycle,
             is_finished=mission_inbound.is_finished,
             indicator_fields=self._indicator_fields,

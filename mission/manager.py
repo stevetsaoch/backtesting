@@ -44,8 +44,8 @@ class MissionManager(FileNameMixin):
         preset_name: str,
         mission_period: int,
         mission_period_unit: Literal["month"],
-        iis_period: int,
-        os_period: int,
+        is_period: int,
+        oos_period: int,
         symbol_file_path: Path,
         symbol_file_name_pattern: str,
     ):
@@ -69,8 +69,8 @@ class MissionManager(FileNameMixin):
         # mission
         self._mission_period = mission_period
         self._mission_period_unit = mission_period_unit
-        self._iis_period = iis_period
-        self._os_period = os_period
+        self._is_period = is_period
+        self._oos_period = oos_period
         # symbol
         self._symbol_file_path = symbol_file_path
         self._symbol_file_name_pattern = symbol_file_name_pattern
@@ -177,41 +177,41 @@ class MissionManager(FileNameMixin):
             self._mission_path_inbound_preset_pair[path] = inbound_presets
 
     def _inbound_presets_to_missions(self):
-        session_period = self._iis_period + self._os_period
+        session_period = self._is_period + self._oos_period
 
         for path, inbound_presets in self._mission_path_inbound_preset_pair.items():
             if len(inbound_presets) < session_period:
                 raise Exception(
-                    f"Mission number {len(inbound_presets)} not enough for one backtesting session. iis {self._iis_period} + os {self._os_period}"
+                    f"Mission number {len(inbound_presets)} not enough for one backtesting session. is {self._is_period} + oos {self._oos_period}"
                 )
             sorted_inbound_presets = sorted(
                 inbound_presets, key=attrgetter("catalog_preset.data_start_datetime")
             )
             #
             i = 1
-            iis_count = 1
-            os_count = 1
+            is_count = 1
+            oos_count = 1
             cycle = 1
             missions = []
             for preset in sorted_inbound_presets:
                 if i % session_period != 0:
                     r = {
-                        "name": f"cycle|{cycle}|iis|{str(iis_count)}|os|N",
-                        "iis": str(iis_count),
-                        "os": None,
+                        "name": f"cycle|{cycle}|is|{str(is_count)}|oos|N",
+                        "is_": str(is_count),
+                        "oos": None,
                         "cycle": str(cycle),
                         "is_finished": False,
                     } | preset.model_dump()
-                    iis_count += 1
+                    is_count += 1
                 else:
                     r = {
-                        "name": f"cycle|{cycle}|iis|N|os|{os_count}",
-                        "iis": None,
-                        "os": str(os_count),
+                        "name": f"cycle|{cycle}|is|N|oos|{oos_count}",
+                        "is_": None,
+                        "oos": str(oos_count),
                         "cycle": str(cycle),
                         "is_finished": False,
                     } | preset.model_dump()
-                    os_count += 1
+                    oos_count += 1
                     cycle += 1
                 missions.append(r)
                 i += 1
@@ -228,11 +228,11 @@ class MissionManager(FileNameMixin):
                     index=False,
                 )
 
-    def build_configs(self, mission_file_path: Path):
+    def mission_build_configs(self, mission_file_path: Path):
         missions = self._read_missions(mission_file_path)
         for index, mission in missions.iterrows():
             mission_inbound = MissionInbound.model_validate(mission.to_dict())
-            mission_outbound = self._builder.build(mission_inbound)
+            mission_outbound = self._builder.mission_build(mission_inbound)
             yield mission_outbound
 
     def debug_build_configs(self, mission_file_path: Path, symbol_size: int):

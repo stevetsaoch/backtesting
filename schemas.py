@@ -526,10 +526,10 @@ class CatalogConfig(BaseModel):
     data_end_datetime: datetime.datetime
     warmup_data_start_datetime: datetime.datetime
     catalog: ParquetDataCatalog
-    instrument_ids: list[str]
-    instruments: list[Instrument]
-    bar_types: dict[InstrumentId, list[BarType]]
-    bars: list[Bar]
+    instrument_ids: list[str] | None
+    instruments: list[Instrument] | None
+    bar_types: dict[InstrumentId, list[BarType]] | None
+    bars: list[Bar] | None
 
 
 class WarmupDataDatetimeDeltaPresetInbound(BaseModel):

@@ -152,10 +152,13 @@ class OneHourNoNewHigh(Factor):
         self.bars = deque(maxlen=self.bar_buffer_size)
         self._highest_price: float = float("-inf")
         self._updated_at: datetime.datetime = self._established_at
-        self._current_datetime: datetime.datetime
+        self._current_datetime: datetime.datetime | None = None
 
     @property
     def signal(self):
+        if self._current_datetime is None:
+            return False
+
         exceed = (self._current_datetime - self._updated_at) > datetime.timedelta(
             hours=1
         )

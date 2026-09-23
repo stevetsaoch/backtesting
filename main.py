@@ -17,11 +17,11 @@ preset_repository.save_presets()
 mm = MissionManager(
     builder=MissionBuilder(),
     record_root_dir=file_dir,
-    preset_name="consolidation_and_breakout_example",
+    preset_name="consolidation_and_breakout_v1",
     mission_period=1,
     mission_period_unit="month",
-    iis_period=3,
-    os_period=1,
+    is_period=3,
+    oos_period=1,
     symbol_file_path=Path("/Volumes/backtesting_main/data/_missions/10_20_1min"),
     symbol_file_name_pattern=" 00:00:00|1|minute|23|day.parquet",
 )
@@ -37,10 +37,11 @@ runner = BacktestingRunner(
     time_bars_build_with_no_updates=True,
     time_bars_skip_first_non_full_bar=True,
     mission_file_path=Path(
-        "/Volumes/backtesting_main/record/consolidation_and_breakout_example/consolidation_and_breakout_example_1/"
+        "/Volumes/backtesting_main/record/consolidation_and_breakout_v1/consolidation_and_breakout_v1_1/"
     ),
     actor_name="consolidation_and_breakout",
     strategy_name="consolidation_and_breakout",
 )
 
-runner.debug_run(symbol_size=4, rounds=1)
+runner.debug_cycle_run(symbol_size=3, rounds=4)
+# runner.debug_run(symbol_size=4, rounds=1)

@@ -28,5 +28,6 @@ sources/
 gui/
 
 # presets
-!presets/consolidation_and_breakout_example.py
+preset/presets/*.py
+!preset/presets/consolidation_and_breakout_example.py
 

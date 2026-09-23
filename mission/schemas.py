@@ -1,5 +1,5 @@
 import math
-from pydantic import field_validator
+from pydantic import field_validator, Field
 
 from indicator.schemas import (
     IndicatorFieldConfig,
@@ -30,8 +30,8 @@ from pydantic import BaseModel
 
 class MissionInbound(BaseModel):
     name: str | None
-    iis: str | None
-    os: str | None
+    is_: str | None
+    oos: str | None
     cycle: str
     is_finished: bool
     indicator_field_presets: list[IndicatorFieldPresetInbound]
@@ -55,8 +55,8 @@ class MissionInbound(BaseModel):
 
 class MissionOutbound(BaseModel):
     name: str | None
-    iis: str | None
-    os: str | None
+    is_: str | None
+    oos: str | None
     cycle: str
     is_finished: bool
     indicator_fields: list[IndicatorFieldConfig]
