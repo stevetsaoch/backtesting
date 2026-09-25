@@ -1,8 +1,9 @@
+import datetime
 from pathlib import Path
 from preset.repository import PresetRepository
 from preset.registry import PresetRegistry
 from mission.manager import MissionManager
-from mission.builder import MissionBuilder
+from mission.builder import MissionConfigBuilder
 from runner import BacktestingRunner
 
 preset_registry = PresetRegistry(presets_path=Path("./preset/presets"))
@@ -15,13 +16,15 @@ preset_repository = PresetRepository(
 preset_repository.save_presets()
 
 mm = MissionManager(
-    builder=MissionBuilder(),
+    builder=MissionConfigBuilder(),
     record_root_dir=file_dir,
     preset_name="consolidation_and_breakout_v1",
-    mission_period=1,
-    mission_period_unit="month",
-    is_period=3,
-    oos_period=1,
+    window_size=1,
+    window_unit="month",
+    is_window_size=3,
+    oos_window_size=2,
+    cycle=2,
+    start_date=datetime.date(2019, 12, 4),
     symbol_file_path=Path("/Volumes/backtesting_main/data/_missions/10_20_1min"),
     symbol_file_name_pattern=" 00:00:00|1|minute|23|day.parquet",
 )
@@ -37,11 +40,10 @@ runner = BacktestingRunner(
     time_bars_build_with_no_updates=True,
     time_bars_skip_first_non_full_bar=True,
     mission_file_path=Path(
-        "/Volumes/backtesting_main/record/consolidation_and_breakout_v1/consolidation_and_breakout_v1_1/"
+        "/Volumes/backtesting_main/record/consolidation_and_breakout_v1/consolidation_and_breakout_v1_cycle_1/"
     ),
     actor_name="consolidation_and_breakout",
     strategy_name="consolidation_and_breakout",
 )
-
 runner.debug_cycle_run(symbol_size=3, rounds=4)
 # runner.debug_run(symbol_size=4, rounds=1)

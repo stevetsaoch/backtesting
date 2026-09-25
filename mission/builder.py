@@ -52,7 +52,7 @@ from mission.schemas import MissionInbound, MissionOutbound
 from util import load_class_from_path
 
 
-class MissionBuilder:
+class MissionConfigBuilder:
     def __init__(self):
         self._indicator_fields: list[IndicatorFieldConfig] = []
         self._indicator_metas: list[IndicatorMeta] = []
@@ -90,14 +90,19 @@ class MissionBuilder:
         )
         self._managers = self._build_manager_config(mission_inbound.manager_preset)
         self._venue = self._build_venue_config(mission_inbound.venue_preset)
-        self._catalog = self._build_catalog_config(mission_inbound.catalog_preset)
+        self._catalog = self._build_catalog_config(
+            mission_inbound.catalog_preset,
+            data_start_datetime=mission_inbound.data_start_datetime,
+            data_end_datetime=mission_inbound.data_end_datetime,
+        )
         self._backtesting_config = self._build_backtesting_config(
             mission_inbound.backtesting_preset
         )
         mission_outbound = MissionOutbound(
-            name=mission_inbound.name,
-            is_=mission_inbound.is_,
+            mission=mission_inbound.mission,
+            preset_index=mission_inbound.preset_index,
             oos=mission_inbound.oos,
+            name=mission_inbound.name,
             cycle=mission_inbound.cycle,
             is_finished=mission_inbound.is_finished,
             indicator_fields=self._indicator_fields,
@@ -144,14 +149,18 @@ class MissionBuilder:
         self._managers = self._build_manager_config(mission_inbound.manager_preset)
         self._venue = self._build_venue_config(mission_inbound.venue_preset)
         self._catalog = self._debug_build_catalog_config(
-            mission_inbound.catalog_preset, symbol_size=symbol_size
+            data_start_datetime=mission_inbound.data_start_datetime,
+            data_end_datetime=mission_inbound.data_end_datetime,
+            symbol_size=symbol_size,
+            preset=mission_inbound.catalog_preset,
         )
         self._backtesting_config = self._build_backtesting_config(
             mission_inbound.backtesting_preset
         )
         mission_outbound = MissionOutbound(
             name=mission_inbound.name,
-            is_=mission_inbound.is_,
+            mission=mission_inbound.mission,
+            preset_index=mission_inbound.preset_index,
             oos=mission_inbound.oos,
             cycle=mission_inbound.cycle,
             is_finished=mission_inbound.is_finished,
@@ -391,7 +400,12 @@ class MissionBuilder:
             latency_model=latency_model,
         )
 
-    def _build_catalog_config(self, preset: CatalogPresetInbound) -> CatalogConfig:
+    def _build_catalog_config(
+        self,
+        preset: CatalogPresetInbound,
+        data_start_datetime: datetime.datetime,
+        data_end_datetime: datetime.datetime,
+    ) -> CatalogConfig:
         catalog = ParquetDataCatalog(path=preset.catalog_path)
 
         warmup_data_start_delta: datetime.timedelta
@@ -409,10 +423,9 @@ class MissionBuilder:
             )
 
         catac = CatalogConfig(
-            data_start_datetime=preset.data_start_datetime,
-            data_end_datetime=preset.data_end_datetime,
-            warmup_data_start_datetime=preset.data_start_datetime
-            + warmup_data_start_delta,
+            data_start_datetime=data_start_datetime,
+            data_end_datetime=data_end_datetime,
+            warmup_data_start_datetime=data_start_datetime + warmup_data_start_delta,
             catalog=ParquetDataCatalog(path=preset.catalog_path),
             instrument_ids=[
                 f"{symbol}.{str(self._venue.venue)}" for symbol in preset.symbols
@@ -444,14 +457,18 @@ class MissionBuilder:
                 instrument_ids=[
                     f"{symbol}.{str(self._venue.venue)}" for symbol in preset.symbols
                 ],
-                start=preset.data_start_datetime,
-                end=preset.data_end_datetime,
+                start=data_start_datetime,
+                end=data_end_datetime,
             ),
         )
         return catac
 
     def _debug_build_catalog_config(
-        self, preset: CatalogPresetInbound, symbol_size: int
+        self,
+        preset: CatalogPresetInbound,
+        symbol_size: int,
+        data_start_datetime: datetime.datetime,
+        data_end_datetime: datetime.datetime,
     ) -> CatalogConfig:
         catalog = ParquetDataCatalog(path=preset.catalog_path)
         symbols = preset.symbols[0:symbol_size]
@@ -472,10 +489,9 @@ class MissionBuilder:
             )
 
         catac = CatalogConfig(
-            data_start_datetime=preset.data_start_datetime,
-            data_end_datetime=preset.data_end_datetime,
-            warmup_data_start_datetime=preset.data_start_datetime
-            + warmup_data_start_delta,
+            data_start_datetime=data_start_datetime,
+            data_end_datetime=data_end_datetime,
+            warmup_data_start_datetime=data_start_datetime + warmup_data_start_delta,
             catalog=ParquetDataCatalog(path=preset.catalog_path),
             instrument_ids=[f"{symbol}.{str(self._venue.venue)}" for symbol in symbols],
             instruments=catalog.instruments(
@@ -505,8 +521,8 @@ class MissionBuilder:
                 instrument_ids=[
                     f"{symbol}.{str(self._venue.venue)}" for symbol in symbols
                 ],
-                start=preset.data_start_datetime,
-                end=preset.data_end_datetime,
+                start=data_start_datetime,
+                end=data_end_datetime,
             ),
         )
         return catac

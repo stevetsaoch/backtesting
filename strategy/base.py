@@ -4,7 +4,7 @@ from typing import Generic, Callable
 
 from nautilus_trader.config import StrategyConfig
 from nautilus_trader.trading.strategy import Strategy
-from nautilus_trader.model import InstrumentId, Bar, BarType
+from nautilus_trader.model import InstrumentId, Bar, BarType, ClientOrderId
 from nautilus_trader.model.events.position import PositionClosed, PositionOpened
 from nautilus_trader.model.events import (
     OrderInitialized,
@@ -25,7 +25,7 @@ from trading_rule.registry import TRADING_RULE_MANAGER_REGISTRY
 from candidate.ranking import CandidateRankingMethod
 from candidate.registry import RANKING_METHOD_REGISTRY, CANDIDATE_MANAGER_REGISTRY
 from order.registry import ORDER_VALIDATOR_REGISTRY, ORDER_COMPOSER_REGISTRY
-from order.order import OrderTicketManager
+from order.order import OrderTicketManager, OrderTicket
 from order.composer import OrderTicketComposer
 from position.registry import POSITION_EVALUATOR_REGISTRY
 from event.manager import EventManager
@@ -58,6 +58,7 @@ class BaseCustomStrategy(Strategy, ABC, Generic[T_WL_CO]):
         # trading rule
         trading_rule_manager_name: str,
         # order
+        order_ticket_book: dict[ClientOrderId, OrderTicket],
         order_validator_name: str,
         order_composer_name: str,
         # position
@@ -69,6 +70,9 @@ class BaseCustomStrategy(Strategy, ABC, Generic[T_WL_CO]):
         self._name = name
         self._bar_types = bar_types
         self._data_start_datetime = data_start_datetime
+
+        # order
+        self._order_ticket_book = order_ticket_book
 
         # session
         self._current_session_datetime: datetime.datetime | None = None
@@ -131,7 +135,9 @@ class BaseCustomStrategy(Strategy, ABC, Generic[T_WL_CO]):
             event_manager=self._event_manager,
         )
         self._order_ticket_manager: OrderTicketManager = OrderTicketManager(
-            event_manager=self._event_manager, clock_provider=self.clock
+            event_manager=self._event_manager,
+            clock_provider=self.clock,
+            order_ticket_book=self._order_ticket_book,
         )
         self._order_composer: OrderTicketComposer = ORDER_COMPOSER_REGISTRY[
             self._order_composer_name

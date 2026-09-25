@@ -1,6 +1,9 @@
 from pathlib import Path
 from typing import Literal
+from collections import defaultdict
+from pydantic import BaseModel, ConfigDict
 
+from nautilus_trader.model import ClientOrderId
 from nautilus_trader.backtest.engine import BacktestEngine
 from nautilus_trader.config import (
     BacktestEngineConfig,
@@ -22,6 +25,17 @@ from strategy.base import BaseCustomStrategy, BaseCustomStrategyConfig
 from strategy.registry import STRATEGY_REGISTRY, STRATEGY_CONFIG_REGISTRY
 from schemas import VenueConfig
 from event.manager import EventManager
+from order.order import OrderTicket
+from trading_rule.schemas import TradingRule
+
+
+class SharedInfo(BaseModel):
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    trading_rule: TradingRule
+    order_ticket_book: dict[ClientOrderId, OrderTicket] = defaultdict()
+    config: MissionOutbound
+    report: dict | None = None
 
 
 class BacktestingRunner:
@@ -55,7 +69,6 @@ class BacktestingRunner:
         self._time_bars_timestamp_on_close = time_bars_timestamp_on_close
         self._time_bars_build_with_no_updates = time_bars_build_with_no_updates
         self._time_bars_skip_first_non_full_bar = time_bars_skip_first_non_full_bar
-        self._mission_current_config: MissionOutbound | None = None
 
         # mission
         self._mission_file_path: Path = mission_file_path
@@ -68,59 +81,53 @@ class BacktestingRunner:
         self._strategy_name = strategy_name
         self._strategy: BaseCustomStrategy
 
-        # share by cycle
-        self._last_mission_category: Literal["oos", "is"] | None = None
-        self._current_cycle: str | None = None
-        self._shared_venue: VenueConfig | None = None
-        self._shared_trading_rule: TradingRule | None = None
+        # share info
+        self._mission_name_shared_info_pair: dict[str, SharedInfo] = defaultdict()
+        self._current_mission: str
 
     def cycle_run(self):
         """
         run by cycle, same cycle of iis and os will share trading rule venue
         """
-        # event_manager
-        # venue
-        for mission_config in self._mission_manager.mission_build_configs(
+        for mission_config in self._mission_manager.get_mission_configs(
             self._mission_file_path
         ):
-            current_mission_category = "is" if mission_config.is_ is not None else "oos"
-            if (
-                self._current_cycle is None
-                or self._current_cycle != mission_config.cycle
-            ):
-                # change or init cycle
-                self._current_cycle = mission_config.cycle
-                self._shared_venue = mission_config.venue
-                self._shared_trading_rule = mission_config.trading_rule
-                self._last_category = current_mission_category
-                venue = mission_config.venue
-                trading_rule = mission_config.trading_rule
-            elif (self._current_cycle == mission_config.cycle) and (
-                self._last_mission_category == current_mission_category
-            ):
-                self._shared_venue.starting_balances = [
-                    Money(
-                        self._shared_trading_rule.portfolio_info.balance,
-                        self._shared_venue.base_currency,
-                    )
-                ]
-                venue = self._shared_venue
-                trading_rule = self._shared_trading_rule
-            elif (self._current_cycle == mission_config.cycle) and (
-                self._last_mission_category != current_mission_category
-            ):
-                venue = mission_config.venue
-                trading_rule = mission_config.trading_rule
-                self._last_mission_category = current_mission_category
-            else:
-                venue = mission_config.venue
-                trading_rule = mission_config.trading_rule
+            if mission_config.oos:
+                return
 
             engine = self._build_engine()
-            self._mission_current_config = mission_config
+            if self._mission_name_shared_info_pair.get(mission_config.name) is None:
+                order_ticket_book = defaultdict()
+                trading_rule = mission_config.trading_rule
+                venue = mission_config.venue
+                self._mission_name_shared_info_pair[mission_config.name] = SharedInfo(
+                    trading_rule=trading_rule,
+                    order_ticket_book=order_ticket_book,
+                    config=mission_config,
+                )
+                self._current_mission = mission_config.mission
+            elif (
+                self._mission_name_shared_info_pair.get(mission_config.name) is not None
+                and self._current_mission != mission_config.mission
+            ):
+                mission_info = self._mission_name_shared_info_pair.get(
+                    mission_config.name
+                )
+                order_ticket_book = mission_info.order_ticket_book
+                trading_rule = mission_info.trading_rule
+                venue = mission_config.venue
+                venue.starting_balances = [
+                    Money(
+                        trading_rule.portfolio_info.balance,
+                        trading_rule.portfolio_info.currency,
+                    )
+                ]
+
+                self._current_mission = mission_config.mission
+
             event_manager = EventManager(
                 root_path=self._mission_file_path,
-                backtesting_name=mission_config.name,
+                backtesting_name=mission_config.mission,
             )
             self._actor = self._init_actor(
                 event_manager=event_manager,
@@ -131,6 +138,7 @@ class BacktestingRunner:
                 mission_config=mission_config,
                 watchlist_manager_provider=self._actor,
                 trading_rule=trading_rule,
+                order_ticket_book=order_ticket_book,
             )
             # engine
             self._add_venue(engine=engine, venue_config=venue)
@@ -141,74 +149,71 @@ class BacktestingRunner:
             engine.add_actor(self._actor)
             engine.add_strategy(self._strategy)
             engine.run()
+
             # update mission status
             self._mission_manager.update_mission_status(
-                self._mission_file_path, mission_config.name
+                self._mission_file_path, mission_config.mission
             )
             # save report
             self._save_report(
                 engine=engine,
                 mission_path=self._mission_file_path,
-                mission_name=mission_config.name,
+                mission=mission_config.mission,
             )
 
     def debug_cycle_run(self, symbol_size: int, rounds: int):
         current_round = 1
 
-        for mission_config in self._mission_manager.debug_build_configs(
+        for mission_config in self._mission_manager.get_debug_mission_configs(
             self._mission_file_path, symbol_size=symbol_size
         ):
-            current_mission_category = "is" if mission_config.is_ is not None else "oos"
-
-            if (
-                self._current_cycle is None
-                or self._current_cycle != mission_config.cycle
-            ):
-                # change or init cycle
-                self._current_cycle = mission_config.cycle
-                self._shared_venue = mission_config.venue
-                self._shared_trading_rule = mission_config.trading_rule
-                self._last_mission_category = current_mission_category
-                venue = mission_config.venue
-                trading_rule = mission_config.trading_rule
-
-            elif (self._current_cycle == mission_config.cycle) and (
-                self._last_mission_category == current_mission_category
-            ):
-                self._shared_venue.starting_balances = [
-                    Money(
-                        self._shared_trading_rule.portfolio_info.balance,
-                        self._shared_venue.base_currency,
-                    )
-                ]
-                venue = self._shared_venue
-                trading_rule = self._shared_trading_rule
-
-            elif (self._current_cycle == mission_config.cycle) and (
-                self._last_mission_category != current_mission_category
-            ):
-                venue = mission_config.venue
-                trading_rule = mission_config.trading_rule
-                self._last_mission_category = current_mission_category
-
-            else:
-                venue = mission_config.venue
-                trading_rule = mission_config.trading_rule
+            if mission_config.oos:
+                return
 
             engine = self._build_engine()
-            self._mission_current_config = mission_config
+            if self._mission_name_shared_info_pair.get(mission_config.name) is None:
+                order_ticket_book = defaultdict()
+                trading_rule = mission_config.trading_rule
+                venue = mission_config.venue
+                self._mission_name_shared_info_pair[mission_config.name] = SharedInfo(
+                    trading_rule=trading_rule,
+                    order_ticket_book=order_ticket_book,
+                    config=mission_config,
+                )
+                self._current_mission = mission_config.mission
+            elif (
+                self._mission_name_shared_info_pair.get(mission_config.name) is not None
+                and self._current_mission != mission_config.mission
+            ):
+                mission_info = self._mission_name_shared_info_pair.get(
+                    mission_config.name
+                )
+                order_ticket_book = mission_info.order_ticket_book
+                trading_rule = mission_info.trading_rule
+                venue = mission_config.venue
+                venue.starting_balances = [
+                    Money(
+                        trading_rule.portfolio_info.balance,
+                        trading_rule.portfolio_info.currency,
+                    )
+                ]
+
+                self._current_mission = mission_config.mission
+
             event_manager = EventManager(
                 root_path=self._mission_file_path,
-                backtesting_name=mission_config.name,
+                backtesting_name=mission_config.mission,
             )
             self._actor = self._init_actor(
-                event_manager=event_manager, mission_config=mission_config
+                event_manager=event_manager,
+                mission_config=mission_config,
             )
             self._strategy = self._init_strategy(
                 event_manager=event_manager,
                 mission_config=mission_config,
                 watchlist_manager_provider=self._actor,
                 trading_rule=trading_rule,
+                order_ticket_book=order_ticket_book,
             )
             # engine
             self._add_venue(engine=engine, venue_config=venue)
@@ -219,101 +224,18 @@ class BacktestingRunner:
             engine.add_actor(self._actor)
             engine.add_strategy(self._strategy)
             engine.run()
+
             # update mission status
             self._mission_manager.update_mission_status(
-                self._mission_file_path, mission_config.name
+                self._mission_file_path, mission_config.mission
             )
             # save report
             self._save_report(
                 engine=engine,
                 mission_path=self._mission_file_path,
-                mission_name=mission_config.name,
-            )
-            current_round += 1
-            if current_round > rounds:
-                break
-
-    def mission_run(self):
-        """
-        run by mission
-
-        """
-        for mission_config in self._mission_manager.mission_build_configs(
-            self._mission_file_path
-        ):
-            engine = self._build_engine()
-            self._mission_current_config = mission_config
-            event_manager = EventManager(
-                root_path=self._mission_file_path,
-                backtesting_name=mission_config.name,
-            )
-            self._actor = self._init_actor(
-                event_manager=event_manager, mission_config=mission_config
-            )
-            self._strategy = self._init_strategy(
-                event_manager=event_manager,
-                mission_config=mission_config,
-                watchlist_manager_provider=self._actor,
-            )
-            # engine
-            self._add_venue(engine=engine, venue_config=mission_config.venue)
-            self._add_instrument(
-                engine=engine, instruments=mission_config.catalog.instruments
-            )
-            self._add_data(engine=engine, bars=mission_config.catalog.bars)
-            engine.add_actor(self._actor)
-            engine.add_strategy(self._strategy)
-            engine.run()
-            # update mission status
-            self._mission_manager.update_mission_status(
-                self._mission_file_path, mission_config.name
-            )
-            # save report
-            self._save_report(
-                engine=engine,
-                mission_path=self._mission_file_path,
-                mission_name=mission_config.name,
+                mission=mission_config.mission,
             )
 
-    def debug_run(self, symbol_size: int, rounds: int):
-        current_round = 1
-        for mission_config in self._mission_manager.debug_build_configs(
-            self._mission_file_path, symbol_size=symbol_size
-        ):
-            engine = self._build_engine()
-            self._mission_current_config = mission_config
-            event_manager = EventManager(
-                root_path=self._mission_file_path,
-                backtesting_name=mission_config.name,
-            )
-            self._actor = self._init_actor(
-                event_manager=event_manager, mission_config=mission_config
-            )
-            self._strategy = self._init_strategy(
-                event_manager=event_manager,
-                mission_config=mission_config,
-                watchlist_manager_provider=self._actor,
-                trading_rule=mission_config.trading_rule,
-            )
-            # engine
-            self._add_venue(engine=engine, venue_config=mission_config.venue)
-            self._add_instrument(
-                engine=engine, instruments=mission_config.catalog.instruments
-            )
-            self._add_data(engine=engine, bars=mission_config.catalog.bars)
-            engine.add_actor(self._actor)
-            engine.add_strategy(self._strategy)
-            engine.run()
-            # update mission status
-            self._mission_manager.update_mission_status(
-                self._mission_file_path, mission_config.name
-            )
-            # save report
-            self._save_report(
-                engine=engine,
-                mission_path=self._mission_file_path,
-                mission_name=mission_config.name,
-            )
             current_round += 1
             if current_round > rounds:
                 break
@@ -332,7 +254,9 @@ class BacktestingRunner:
         )
         return engine
 
-    def _add_venue(self, engine: BacktestEngine, venue_config: VenueConfig):
+    def _add_venue(self, engine: BacktestEngine, venue_config: VenueConfig | None):
+        if venue_config is None:
+            return
         engine.add_venue(**venue_config.model_dump())
 
     def _add_instrument(self, engine: BacktestEngine, instruments: list[str]):
@@ -364,6 +288,7 @@ class BacktestingRunner:
         mission_config: MissionOutbound,
         watchlist_manager_provider: WatchlistManagerProvider,
         trading_rule: TradingRule | None,
+        order_ticket_book: dict[ClientOrderId, OrderTicket],
     ) -> BaseCustomStrategy:
         strategy_config: BaseCustomStrategyConfig = STRATEGY_CONFIG_REGISTRY[
             self._strategy_name
@@ -371,10 +296,11 @@ class BacktestingRunner:
         strategy: BaseCustomStrategy = STRATEGY_REGISTRY[self._strategy_name](
             name=mission_config.name,
             config=strategy_config,
+            order_ticket_book=order_ticket_book,
             watchlist_manager_provider=watchlist_manager_provider,
             event_manager=event_manager,
             trading_rule=(
-                mission_config.trading_rule if trading_rule == None else trading_rule
+                mission_config.trading_rule if trading_rule is None else trading_rule
             ),
             warmup_data_start_datetime=mission_config.catalog.warmup_data_start_datetime,
             data_start_datetime=mission_config.catalog.data_start_datetime,
@@ -392,9 +318,7 @@ class BacktestingRunner:
 
         return strategy
 
-    def _save_report(
-        self, engine: BacktestEngine, mission_path: Path, mission_name: str
-    ):
-        report_path = mission_path / self.MISSION_REPORT_PATH / f"{mission_name}.html"
+    def _save_report(self, engine: BacktestEngine, mission_path: Path, mission: str):
+        report_path = mission_path / self.MISSION_REPORT_PATH / f"{mission}.html"
         report_path.parent.mkdir(parents=True, exist_ok=True)
         create_tearsheet(engine=engine, output_path=str(report_path))

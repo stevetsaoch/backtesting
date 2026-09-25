@@ -197,8 +197,6 @@ trading_rule_preset = TradingRulePresetOutbound(
     sweep=None,
 )
 catalog_preset = CatalogPresetOutbound(
-    data_start_datetime=datetime.datetime(2019, 12, 1, 0, 0, 0),
-    data_end_datetime=datetime.datetime(2020, 5, 1, 0, 0, 0),
     warmup_data_delta_preset=WarmupDataDatetimeDeltaPresetOutbound(
         unit="day", value=-5
     ),

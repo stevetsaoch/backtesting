@@ -1,5 +1,6 @@
 import math
-from pydantic import field_validator, Field
+import datetime
+from pydantic import field_validator
 
 from indicator.schemas import (
     IndicatorFieldConfig,
@@ -29,11 +30,17 @@ from pydantic import BaseModel
 
 
 class MissionInbound(BaseModel):
-    name: str | None
-    is_: str | None
-    oos: str | None
+    # state
+    name: str
+    mission: str
     cycle: str
+    oos: bool
+    preset_index: str
+    data_start_datetime: datetime.datetime
+    data_end_datetime: datetime.datetime
     is_finished: bool
+
+    # config
     indicator_field_presets: list[IndicatorFieldPresetInbound]
     indicator_meta_presets: list[IndicatorMetaPresetInbound]
     trading_signal_factor_presets: list[FactorPresetInbound]
@@ -54,11 +61,15 @@ class MissionInbound(BaseModel):
 
 
 class MissionOutbound(BaseModel):
-    name: str | None
-    is_: str | None
-    oos: str | None
+    # state
+    name: str
+    mission: str
     cycle: str
+    oos: bool
+    preset_index: str | None
     is_finished: bool
+
+    # config
     indicator_fields: list[IndicatorFieldConfig]
     indicator_metas: list[IndicatorMeta]
     trading_signal_factors: list[FactorConfig]

@@ -543,9 +543,6 @@ class WarmupDataDatetimeDeltaPresetOutbound(BaseModel):
 
 
 class CatalogPresetInbound(BaseModel):
-
-    data_start_datetime: datetime.datetime
-    data_end_datetime: datetime.datetime
     warmup_data_delta_preset: WarmupDataDatetimeDeltaPresetInbound
     catalog_path: str
     bar_presets: list[BarPresetInbound]
@@ -553,8 +550,6 @@ class CatalogPresetInbound(BaseModel):
 
 
 class CatalogPresetOutbound(BaseModel):
-    data_start_datetime: datetime.datetime
-    data_end_datetime: datetime.datetime
     warmup_data_delta_preset: WarmupDataDatetimeDeltaPresetOutbound
     catalog_path: str
     bar_presets: list[BarPresetOutbound]

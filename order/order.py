@@ -237,8 +237,13 @@ class RecordOrderTicketEvent(Event):
 
 
 class OrderTicketManager:
-    def __init__(self, event_manager: EventManager, clock_provider: ClockProvider):
-        self._books: dict[ClientOrderId, OrderTicket] = defaultdict()
+    def __init__(
+        self,
+        event_manager: EventManager,
+        clock_provider: ClockProvider,
+        order_ticket_book: dict[ClientOrderId, OrderTicket],
+    ):
+        self._books: dict[ClientOrderId, OrderTicket] = order_ticket_book
         self._instrument_ids: set[InstrumentId] = set()
         self._event_manager: EventManager = event_manager
         self._clock_provider: ClockProvider = clock_provider

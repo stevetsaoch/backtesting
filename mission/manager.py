@@ -1,17 +1,14 @@
 import os
 import duckdb
-import calendar
 import datetime
 import pandas as pd
-from typing import Literal
 from pathlib import Path
-from operator import attrgetter
 from collections import defaultdict
-from dateutil.relativedelta import relativedelta
+from typing import Literal, Iterator
 
 from mixin.mixin import FileNameMixin
-from mission.builder import MissionBuilder
-from mission.schemas import MissionInbound
+from mission.builder import MissionConfigBuilder
+from mission.schemas import MissionInbound, MissionOutbound
 
 from preset.schemas import PresetInbound, PresetOutbound
 from indicator.schemas import IndicatorFieldPresetInbound
@@ -31,6 +28,8 @@ from schemas import (
     WarmupDataDatetimeDeltaPresetInbound,
 )
 
+Window = tuple[datetime.datetime, datetime.datetime]
+
 
 class MissionManager(FileNameMixin):
     EVENTS_DIR = "events"
@@ -39,13 +38,15 @@ class MissionManager(FileNameMixin):
 
     def __init__(
         self,
-        builder: MissionBuilder,
+        builder: MissionConfigBuilder,
         record_root_dir: Path,
         preset_name: str,
-        mission_period: int,
-        mission_period_unit: Literal["month"],
-        is_period: int,
-        oos_period: int,
+        window_size: int,
+        window_unit: Literal["day", "month"],
+        is_window_size: int,
+        oos_window_size: int,
+        cycle: int,
+        start_date: datetime.date,
         symbol_file_path: Path,
         symbol_file_name_pattern: str,
     ):
@@ -57,185 +58,166 @@ class MissionManager(FileNameMixin):
         self._outbound_presets_path = (
             self._record_root_dir / self._preset_name / self.PRESETS_PARQUET
         )
-        self._outbound_presets: list[PresetOutbound] = self._read_outbound_presets()
-        self._mission_path_outbound_preset_pair: dict[Path, PresetOutbound] = (
-            defaultdict()
+        self._outbound_presets: dict[str, PresetOutbound] = (
+            self._read_outbound_presets()
         )
         # inbound
         self._inbound_presets: list[PresetInbound] = []
         self._mission_path_inbound_preset_pair: dict[Path, list[PresetInbound]] = (
             defaultdict()
         )
-        # mission
-        self._mission_period = mission_period
-        self._mission_period_unit = mission_period_unit
-        self._is_period = is_period
-        self._oos_period = oos_period
+        # window
+        self._start_date = start_date
+        self._cycle = cycle
+        self._window_size = window_size
+        self._window_unit: Literal["day", "month"] = window_unit
+        self._is_window_size = is_window_size
+        self._oos_window_siez = oos_window_size
         # symbol
         self._symbol_file_path = symbol_file_path
         self._symbol_file_name_pattern = symbol_file_name_pattern
 
     def build_missions(self):
-        self._init_mission_dir()
-        self._outbound_presets_to_inbound_presets()
-        self._inbound_presets_to_missions()
+        walk_forward_windows = self._generate_walk_forward_windows(
+            window_size=self._window_size,
+            window_unit=self._window_unit,
+            cycle=self._cycle,
+            start_date=self._start_date,
+            is_window_size=self._is_window_size,
+            oos_window_size=self._oos_window_siez,
+        )
+        mission_index = 1
+        missions = []
+        oos_missions = []
+        for k, v in walk_forward_windows.items():
+            for p_index, p in self._outbound_presets.items():
+                for cat, pairs in v.items():
+                    if cat == "is":
+                        for pair in pairs:
+                            inp = self._outbound_preset_to_inbound_preset(pair, p)
+                            mission = {
+                                "name": f"c|{k}|is|prest|{p_index}",
+                                "mission": str(mission_index),
+                                "cycle": k,
+                                "oos": False,
+                                "preset_index": p_index,
+                                "data_start_datetime": pair[0],
+                                "data_end_datetime": pair[1],
+                                "is_finished": False,
+                                **inp.model_dump(),
+                            }
+                            missions.append(mission)
+                            mission_index += 1
+                    elif cat == "oos" and len(oos_missions) < self._oos_window_siez:
+                        for pair in pairs:
+                            oos_mission = {
+                                "name": f"c|{k}|oos",
+                                "mission": str(mission_index),
+                                "cycle": k,
+                                "oos": True,
+                                "preset_index": None,
+                                "data_start_datetime": pair[0],
+                                "data_end_datetime": pair[1],
+                                "is_finished": False,
+                            }
+                            oos_missions.append(oos_mission)
+                            mission_index += 1
 
-    def _read_outbound_presets(self) -> list[PresetOutbound]:
+            # save mission
+            mission_path = self._preset_root / f"{self._preset_name}_cycle_{k}"
+            mission_path.mkdir(parents=True, exist_ok=True)
+            pd.DataFrame(missions + oos_missions).to_parquet(
+                path=mission_path / self.MISSIONS_PARQUET,
+                engine="pyarrow",
+                compression="snappy",
+                index=False,
+            )
+            missions = []
+            oos_missions = []
+
+    def _read_outbound_presets(self) -> dict[str, PresetOutbound]:
         data = pd.read_parquet(self._outbound_presets_path)
-        presets = []
+        presets = {}
+        i = 1
         for index, r in data.iterrows():
-            presets.append(PresetOutbound.model_validate(r.to_dict()))
+            presets[str(i)] = PresetOutbound.model_validate(r.to_dict())
+            i += 1
         return presets
 
-    def _init_mission_dir(self):
-        i = 1
-        for preset in self._outbound_presets:
-            mission_path = self._preset_root / f"{self._preset_name}_{str(i)}"
-            mission_path.mkdir(parents=True, exist_ok=True)
-            self._mission_path_outbound_preset_pair[mission_path] = preset
-            i += 1
+    def _outbound_preset_to_inbound_preset(
+        self, window_pair: Window, preset: PresetOutbound
+    ) -> PresetInbound:
 
-    def _outbound_presets_to_inbound_presets(self):
-        for path, preset in self._mission_path_outbound_preset_pair.items():
+        catalog_preset = preset.catalog_preset
+        # warmup data delta
+        warmup_data_delta_preset = WarmupDataDatetimeDeltaPresetInbound.model_validate(
+            catalog_preset.warmup_data_delta_preset.model_dump()
+        )
 
-            catalog_preset = preset.catalog_preset
-            month_pairs = self._split_by_month(
-                start=catalog_preset.data_start_datetime,
-                end=catalog_preset.data_end_datetime,
-                months=self._mission_period,
-            )
-            # warmup data delta
-            warmup_data_delta_preset = (
-                WarmupDataDatetimeDeltaPresetInbound.model_validate(
-                    catalog_preset.warmup_data_delta_preset.model_dump()
-                )
-            )
+        start = window_pair[0]
+        symbols = self._get_symbols(start)
+        in_catalog_preset = CatalogPresetInbound(
+            warmup_data_delta_preset=warmup_data_delta_preset,
+            symbols=symbols,
+            catalog_path=catalog_preset.catalog_path,
+            bar_presets=[
+                BarPresetInbound(**bpo.model_dump())
+                for bpo in catalog_preset.bar_presets
+            ],
+        )
 
-            inbound_catalog_presets = []
-            for month_pair in month_pairs:
-                start = month_pair[0]
-                symbols = self._get_symbols(start)
-                inbound_catalog_preset = CatalogPresetInbound(
-                    data_start_datetime=month_pair[0],
-                    data_end_datetime=month_pair[1],
-                    warmup_data_delta_preset=warmup_data_delta_preset,
-                    symbols=symbols,
-                    catalog_path=catalog_preset.catalog_path,
-                    bar_presets=[
-                        BarPresetInbound(**bpo.model_dump())
-                        for bpo in catalog_preset.bar_presets
-                    ],
-                )
-                inbound_catalog_presets.append(inbound_catalog_preset)
+        # inbound presets
+        in_indicator_field_presets = [
+            IndicatorFieldPresetInbound(**ifpo.model_dump())
+            for ifpo in preset.indicator_field_presets
+        ]
+        in_indicator_meta_presets = [
+            IndicatorMetaPresetInbound(**impo.model_dump())
+            for impo in preset.indicator_meta_presets
+        ]
+        in_trading_signal_factor_presets = [
+            FactorPresetInbound(**sfpo.model_dump())
+            for sfpo in preset.trading_signal_factor_presets
+        ]
+        in_trading_signal_meta_presets = [
+            SignalMetaPresetInbound(**smpo.model_dump())
+            for smpo in preset.trading_signal_meta_presets
+        ]
+        in_trading_signal_ranking = RankingPresetInbound(
+            **preset.candidate_ranking_preset.model_dump()
+        )
+        in_venue_preset = VenuePresetInbound(**preset.venue_preset.model_dump())
+        in_trading_rule_preset = TradingRulePresetInbound(
+            **preset.trading_rule_preset.model_dump()
+        )
+        in_manager_preset = ManagerPresetInbound(**preset.manager_preset.model_dump())
+        in_backtesting_preset = BacktestingPresetInbound(
+            **preset.backtesting_preset.model_dump()
+        )
+        inbound_preset = PresetInbound(
+            indicator_field_presets=in_indicator_field_presets,
+            indicator_meta_presets=in_indicator_meta_presets,
+            trading_signal_factor_presets=in_trading_signal_factor_presets,
+            trading_signal_meta_presets=in_trading_signal_meta_presets,
+            candidate_ranking_preset=in_trading_signal_ranking,
+            trading_rule_preset=in_trading_rule_preset,
+            manager_preset=in_manager_preset,
+            venue_preset=in_venue_preset,
+            catalog_preset=in_catalog_preset,
+            backtesting_preset=in_backtesting_preset,
+        )
+        return inbound_preset
 
-            # inbound presets
-            inbound_presets: list[PresetInbound] = []
-            for in_catalog_preset in inbound_catalog_presets:
-                in_indicator_field_presets = [
-                    IndicatorFieldPresetInbound(**ifpo.model_dump())
-                    for ifpo in preset.indicator_field_presets
-                ]
-                in_indicator_meta_presets = [
-                    IndicatorMetaPresetInbound(**impo.model_dump())
-                    for impo in preset.indicator_meta_presets
-                ]
-                in_trading_signal_factor_presets = [
-                    FactorPresetInbound(**sfpo.model_dump())
-                    for sfpo in preset.trading_signal_factor_presets
-                ]
-                in_trading_signal_meta_presets = [
-                    SignalMetaPresetInbound(**smpo.model_dump())
-                    for smpo in preset.trading_signal_meta_presets
-                ]
-                in_trading_signal_ranking = RankingPresetInbound(
-                    **preset.candidate_ranking_preset.model_dump()
-                )
-                in_venue_preset = VenuePresetInbound(**preset.venue_preset.model_dump())
-                in_trading_rule_preset = TradingRulePresetInbound(
-                    **preset.trading_rule_preset.model_dump()
-                )
-                in_manager_preset = ManagerPresetInbound(
-                    **preset.manager_preset.model_dump()
-                )
-                in_backtesting_preset = BacktestingPresetInbound(
-                    **preset.backtesting_preset.model_dump()
-                )
-                in_catalog_preset = in_catalog_preset
-                inbound_preset = PresetInbound(
-                    indicator_field_presets=in_indicator_field_presets,
-                    indicator_meta_presets=in_indicator_meta_presets,
-                    trading_signal_factor_presets=in_trading_signal_factor_presets,
-                    trading_signal_meta_presets=in_trading_signal_meta_presets,
-                    candidate_ranking_preset=in_trading_signal_ranking,
-                    trading_rule_preset=in_trading_rule_preset,
-                    manager_preset=in_manager_preset,
-                    venue_preset=in_venue_preset,
-                    catalog_preset=in_catalog_preset,
-                    backtesting_preset=in_backtesting_preset,
-                )
-                inbound_presets.append(inbound_preset)
-            self._mission_path_inbound_preset_pair[path] = inbound_presets
-
-    def _inbound_presets_to_missions(self):
-        session_period = self._is_period + self._oos_period
-
-        for path, inbound_presets in self._mission_path_inbound_preset_pair.items():
-            if len(inbound_presets) < session_period:
-                raise Exception(
-                    f"Mission number {len(inbound_presets)} not enough for one backtesting session. is {self._is_period} + oos {self._oos_period}"
-                )
-            sorted_inbound_presets = sorted(
-                inbound_presets, key=attrgetter("catalog_preset.data_start_datetime")
-            )
-            #
-            i = 1
-            is_count = 1
-            oos_count = 1
-            cycle = 1
-            missions = []
-            for preset in sorted_inbound_presets:
-                if i % session_period != 0:
-                    r = {
-                        "name": f"cycle|{cycle}|is|{str(is_count)}|oos|N",
-                        "is_": str(is_count),
-                        "oos": None,
-                        "cycle": str(cycle),
-                        "is_finished": False,
-                    } | preset.model_dump()
-                    is_count += 1
-                else:
-                    r = {
-                        "name": f"cycle|{cycle}|is|N|oos|{oos_count}",
-                        "is_": None,
-                        "oos": str(oos_count),
-                        "cycle": str(cycle),
-                        "is_finished": False,
-                    } | preset.model_dump()
-                    oos_count += 1
-                    cycle += 1
-                missions.append(r)
-                i += 1
-
-            mission_data = pd.DataFrame(missions)
-            mission_path = path / self.MISSIONS_PARQUET
-            if mission_path.exists():
-                pass
-            else:
-                mission_data.to_parquet(
-                    path=path / self.MISSIONS_PARQUET,
-                    engine="pyarrow",
-                    compression="snappy",
-                    index=False,
-                )
-
-    def mission_build_configs(self, mission_file_path: Path):
+    def get_mission_configs(self, mission_file_path: Path) -> Iterator[MissionOutbound]:
         missions = self._read_missions(mission_file_path)
         for index, mission in missions.iterrows():
             mission_inbound = MissionInbound.model_validate(mission.to_dict())
             mission_outbound = self._builder.mission_build(mission_inbound)
             yield mission_outbound
 
-    def debug_build_configs(self, mission_file_path: Path, symbol_size: int):
+    def get_debug_mission_configs(
+        self, mission_file_path: Path, symbol_size: int
+    ) -> Iterator[MissionOutbound]:
         missions = self._read_missions(mission_file_path)
         for index, mission in missions.iterrows():
             mission_inbound = MissionInbound.model_validate(mission.to_dict())
@@ -244,19 +226,19 @@ class MissionManager(FileNameMixin):
             )
             yield mission_outbound
 
-    def update_mission_status(self, mission_file_path: Path, mission_name: str):
+    def update_mission_status(self, mission_file_path: Path, mission: str):
         tmp_file_name = f"tmp.{self.MISSIONS_PARQUET}"
         con = duckdb.connect()
         con.execute(
             f"""
             COPY (
                 SELECT * REPLACE (
-                    CASE WHEN name = ? THEN true ELSE is_finished END AS is_finished
+                    CASE WHEN mission = ? THEN true ELSE is_finished END AS is_finished
                 )
                 FROM read_parquet('{mission_file_path / self.MISSIONS_PARQUET}')
             ) TO '{mission_file_path/tmp_file_name}' (FORMAT PARQUET);
             """,
-            [mission_name],
+            [mission],
         )
 
         os.replace(
@@ -278,39 +260,76 @@ class MissionManager(FileNameMixin):
             params=[
                 str(
                     self._symbol_file_path
-                    / f"{datetime.date().isoformat()}{self._symbol_file_name_pattern}"
+                    / f"{datetime.date().replace(day=1).isoformat()}{self._symbol_file_name_pattern}"
                 )
             ],
         ).df()
         symbols = r["symbol"].to_list()
         return symbols
 
-    def _split_by_month(
-        self, start: datetime.datetime, end: datetime.datetime, months: int = 1
-    ) -> list[tuple[datetime.datetime, datetime.datetime]]:
-        if start > end:
-            raise ValueError(f"start ({start}) must <= end ({end})")
-        if months < 1:
-            raise ValueError(f"months must >= 1，received {months}")
+    # walk forward
+    def _add_months(self, first_of_month: datetime.date, n: int) -> datetime.date:
+        """Return the first day of the month n months after first_of_month."""
+        total = first_of_month.year * 12 + (first_of_month.month - 1) + n
+        return datetime.date(total // 12, total % 12 + 1, 1)
 
-        chunks: list[tuple[datetime.datetime, datetime.datetime]] = []
-        chunk_start = start
+    def _window_bounds(
+        self,
+        start_date: datetime.date,
+        window_size: int,
+        window_unit: Literal["day", "month"],
+        index: int,
+    ) -> tuple[datetime.date, datetime.date]:
+        if window_unit == "day":
+            start = start_date + datetime.timedelta(days=index * window_size)
+            end = start + datetime.timedelta(days=window_size - 1)
+            return start, end
 
-        while chunk_start < end:  # ← 改成嚴格小於
-            target_month = chunk_start.replace(day=1) + relativedelta(months=months - 1)
-            last_day = calendar.monthrange(target_month.year, target_month.month)[1]
-            chunk_end_of_month = target_month.replace(
-                day=last_day, hour=23, minute=59, second=59, microsecond=0
+        # month: windows align to calendar months; the first one is clipped at start_date
+        month_start = self._add_months(start_date.replace(day=1), index * window_size)
+        start = max(month_start, start_date)
+        end = self._add_months(month_start, window_size) - datetime.timedelta(days=1)
+        return start, end
+
+    def _to_datetime_range(self, start: datetime.date, end: datetime.date) -> Window:
+        return datetime.datetime.combine(
+            start, datetime.time.min
+        ), datetime.datetime.combine(end, datetime.time(23, 59, 59))
+
+    def _generate_walk_forward_windows(
+        self,
+        window_size: int,
+        window_unit: Literal["day", "month"],
+        cycle: int,
+        start_date: datetime.date,
+        is_window_size: int,
+        oos_window_size: int,
+    ) -> dict[str, dict[str, list[Window]]]:
+        if window_unit not in ("day", "month"):
+            raise ValueError(
+                f"window_unit must be 'day' or 'month', got {window_unit!r}"
             )
-            chunk_end = min(chunk_end_of_month, end)
-            chunks.append((chunk_start, chunk_end))
+        for name, value in (
+            ("window_size", window_size),
+            ("cycle", cycle),
+            ("is_window_size", is_window_size),
+            ("oos_window_size", oos_window_size),
+        ):
+            if value < 1:
+                raise ValueError(f"{name} must be >= 1, got {value}")
 
-            next_month = target_month + relativedelta(months=1)
-            next_start = next_month.replace(
-                day=1, hour=0, minute=0, second=0, microsecond=0
+        def _window(index: int) -> Window:
+            return self._to_datetime_range(
+                *self._window_bounds(start_date, window_size, window_unit, index)
             )
-            if chunk_start.tzinfo is not None:
-                next_start = next_start.replace(tzinfo=chunk_start.tzinfo)
-            chunk_start = next_start
 
-        return chunks
+        result: dict[str, dict[str, list[Window]]] = {}
+        for c in range(1, cycle + 1):
+            offset = (c - 1) * oos_window_size
+            result[str(c)] = {
+                "is": [_window(offset + i) for i in range(is_window_size)],
+                "oos": [
+                    _window(offset + is_window_size + j) for j in range(oos_window_size)
+                ],
+            }
+        return result
