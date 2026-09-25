@@ -72,6 +72,7 @@ class BaseCustomActor(Actor, ABC, Generic[T_WL_CO]):
                 hour=23, minute=59, second=59, microsecond=0
             ),
             interval=datetime.timedelta(days=1),
+            fire_immediately=True,
             callback=self._daily_reset,
         )
         # reset
