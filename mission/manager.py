@@ -72,7 +72,7 @@ class MissionManager(FileNameMixin):
         self._window_size = window_size
         self._window_unit: Literal["day", "month"] = window_unit
         self._is_window_size = is_window_size
-        self._oos_window_siez = oos_window_size
+        self._oos_window_size = oos_window_size
         # symbol
         self._symbol_file_path = symbol_file_path
         self._symbol_file_name_pattern = symbol_file_name_pattern
@@ -84,7 +84,7 @@ class MissionManager(FileNameMixin):
             cycle=self._cycle,
             start_date=self._start_date,
             is_window_size=self._is_window_size,
-            oos_window_size=self._oos_window_siez,
+            oos_window_size=self._oos_window_size,
         )
         mission_index = 1
         missions = []
@@ -108,32 +108,33 @@ class MissionManager(FileNameMixin):
                             }
                             missions.append(mission)
                             mission_index += 1
-                    elif cat == "oos" and len(oos_missions) < self._oos_window_siez:
-                        for pair in pairs:
-                            oos_mission = {
-                                "name": f"c|{k}|oos",
-                                "mission": str(mission_index),
-                                "cycle": k,
-                                "oos": True,
-                                "preset_index": None,
-                                "data_start_datetime": pair[0],
-                                "data_end_datetime": pair[1],
-                                "is_finished": False,
-                            }
-                            oos_missions.append(oos_mission)
-                            mission_index += 1
+            for cat, pairs in v.items():
+                if cat == "oos":
+                    for pair in pairs:
+                        oos_mission = {
+                            "name": f"c|{k}|oos",
+                            "mission": str(mission_index),
+                            "cycle": k,
+                            "oos": True,
+                            "preset_index": None,
+                            "data_start_datetime": pair[0],
+                            "data_end_datetime": pair[1],
+                            "is_finished": False,
+                        }
+                        oos_missions.append(oos_mission)
+                        mission_index += 1
 
-            # save mission
-            mission_path = self._preset_root / f"{self._preset_name}_cycle_{k}"
-            mission_path.mkdir(parents=True, exist_ok=True)
-            pd.DataFrame(missions + oos_missions).to_parquet(
-                path=mission_path / self.MISSIONS_PARQUET,
-                engine="pyarrow",
-                compression="snappy",
-                index=False,
-            )
-            missions = []
-            oos_missions = []
+        # save mission
+        mission_path = self._preset_root
+        mission_path.mkdir(parents=True, exist_ok=True)
+        pd.DataFrame(missions + oos_missions).to_parquet(
+            path=mission_path / self.MISSIONS_PARQUET,
+            engine="pyarrow",
+            compression="snappy",
+            index=False,
+        )
+        missions = []
+        oos_missions = []
 
     def _read_outbound_presets(self) -> dict[str, PresetOutbound]:
         data = pd.read_parquet(self._outbound_presets_path)

@@ -22,7 +22,7 @@ mm = MissionManager(
     window_size=1,
     window_unit="month",
     is_window_size=3,
-    oos_window_size=2,
+    oos_window_size=1,
     cycle=2,
     start_date=datetime.date(2019, 12, 4),
     symbol_file_path=Path("/Volumes/backtesting_main/data/_missions/10_20_1min"),
@@ -40,10 +40,10 @@ runner = BacktestingRunner(
     time_bars_build_with_no_updates=True,
     time_bars_skip_first_non_full_bar=True,
     mission_file_path=Path(
-        "/Volumes/backtesting_main/record/consolidation_and_breakout_v1/consolidation_and_breakout_v1_cycle_1/"
+        "/Volumes/backtesting_main/record/consolidation_and_breakout_v1/"
     ),
     actor_name="consolidation_and_breakout",
     strategy_name="consolidation_and_breakout",
 )
-runner.debug_cycle_run(symbol_size=3, rounds=4)
+runner.debug_cycle_run(symbol_size=3, rounds=15)
 # runner.debug_run(symbol_size=4, rounds=1)

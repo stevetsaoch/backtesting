@@ -10,7 +10,7 @@ from nautilus_trader.config import (
     DataEngineConfig,
     LoggingConfig,
 )
-from nautilus_trader.model import Bar, Money, Currency
+from nautilus_trader.model import Bar, Money
 from nautilus_trader.analysis import create_tearsheet
 
 from trading_rule.schemas import TradingRule
