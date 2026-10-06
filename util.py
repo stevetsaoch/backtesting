@@ -1,9 +1,24 @@
+from __future__ import annotations
 import os
 import re
 import enum
 import time
 import threading
 import importlib
+import types
+import datetime
+from enum import Enum
+from decimal import Decimal
+from typing import Any, Union, get_args, get_origin
+
+import pandas as pd
+from pydantic import (
+    AwareDatetime,
+    BaseModel,
+    FutureDatetime,
+    NaiveDatetime,
+    PastDatetime,
+)
 
 
 class PacingController:
@@ -83,3 +98,76 @@ def enum_value_factory(items):
     for k, v in items:
         out[k] = v.value if isinstance(v, enum.Enum) else v
     return out
+
+
+class PydanticModelPandasDataframeTransformer:
+    # pydantic's datetime helper types are not datetime subclasses; treat them as datetime
+    _DATETIME_ALIASES = (AwareDatetime, NaiveDatetime, PastDatetime, FutureDatetime)
+
+    # Python type -> pandas dtype. Nullable dtypes are used where a column may hold None.
+    _DTYPES: dict[type, tuple[str, str]] = {  # (not-null dtype, nullable dtype)
+        bool: ("bool", "boolean"),
+        int: ("int64", "Int64"),
+        float: ("float64", "float64"),
+        str: ("str", "str"),
+        datetime.datetime: ("datetime64[s]", "datetime64[s]"),
+        datetime.date: ("object", "object"),
+        Decimal: ("object", "object"),
+    }
+
+    def _unwrap_optional(self, tp: Any) -> tuple[Any, bool]:
+        if get_origin(tp) in (Union, types.UnionType):
+            args = [a for a in get_args(tp) if a is not type(None)]
+            if len(args) == 1:
+                return args[0], True
+        return tp, False
+
+    def _dtype_for(self, tp: Any) -> str:
+        base, nullable = self._unwrap_optional(tp)
+        if base in self._DATETIME_ALIASES:
+            base = datetime.datetime
+        if isinstance(base, type) and issubclass(base, Enum):
+            base = str if issubclass(base, str) else object
+        for py_type, (dtype, null_dtype) in self._DTYPES.items():
+            if (
+                isinstance(base, type)
+                and issubclass(base, py_type)
+                and not (py_type is int and base is bool)
+            ):
+                return null_dtype if nullable else dtype
+        return "object"  # unknown / arbitrary types
+
+    def _frame_schema(self, model: type[BaseModel]) -> dict[str, str]:
+        """Column -> pandas dtype, in field order, including computed fields."""
+        schema = {
+            name: self._dtype_for(f.annotation)
+            for name, f in model.model_fields.items()
+        }
+        schema |= {
+            name: self._dtype_for(f.return_type)
+            for name, f in model.model_computed_fields.items()
+        }
+        return schema
+
+    def _empty_frame(self, model: type[BaseModel]) -> pd.DataFrame:
+        return pd.DataFrame(
+            {c: pd.Series(dtype=d) for c, d in self._frame_schema(model).items()}
+        )
+
+    def to_frame(self, models: list[Any], model: type[BaseModel]) -> pd.DataFrame:
+        """Models -> DataFrame with a fixed schema (works for an empty list too)."""
+        schema = self._frame_schema(model)
+        if not models:
+            return self._empty_frame(model)
+        df = pd.DataFrame([m.model_dump() for m in models], columns=list(schema))
+        for col, dtype in schema.items():
+            if dtype.startswith("datetime64"):
+                df[col] = pd.to_datetime(df[col]).dt.as_unit("us")
+            elif dtype != "object":
+                df[col] = df[col].astype(dtype)
+        return df
+
+    def from_frame(self, df: pd.DataFrame, model: type[Any]) -> list[Any]:
+        """DataFrame -> models (NaN/NaT -> None)."""
+        records = df.astype(object).where(df.notna(), None).to_dict(orient="records")
+        return [model.model_validate(r, strict=False) for r in records]

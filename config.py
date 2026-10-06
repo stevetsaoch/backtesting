@@ -6,6 +6,8 @@ from schemas import (
     SymbolInfo,
     NautilusConfig,
     VenueEnvConfig,
+    AlpacaConfig,
+    MarketDataConfig,
 )
 
 ENV_PATH = "./env/config.toml"
@@ -31,3 +33,5 @@ if PROJECT_CONFIG.flag == "paper" and PROJECT_CONFIG.proxy == "tws":
 SYMBOL_CONFIG = SymbolInfo(**config["symbol"])
 NAUTILUS_CONFIG = NautilusConfig(**config["nautilus"])
 VENUE_ENV_CONFIG = VenueEnvConfig(**config["venue"])
+ALPACA_CONFIG = AlpacaConfig(**config["alpaca"])
+MARKET_DATA_CONFIG = MarketDataConfig(**config["market-data"])

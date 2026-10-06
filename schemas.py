@@ -3,10 +3,11 @@ import datetime
 import operator
 import zoneinfo
 import pandas as pd
+from pathlib import Path
 from dataclasses import dataclass
 from ib_async import Contract, Stock
 from typing import Literal, ClassVar, Any, Union
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import BaseModel, ConfigDict, model_validator, field_validator
 
 from nautilus_trader.model.instruments import Equity, Instrument
 from nautilus_trader.model.identifiers import InstrumentId, Symbol
@@ -19,6 +20,24 @@ from nautilus_trader.model.currencies import USD
 from nautilus_trader.config import (
     BacktestDataConfig,
 )
+
+
+class AlpacaConfig(BaseModel):
+    api_key: str
+    secret_key: str
+
+
+class MarketDataConfig(BaseModel):
+    root_directory: Path
+    assets_file: str
+    index_file: str
+    aggregated_data_monthly_file: str
+    aggregated_data_daily_file: str
+
+    @field_validator("root_directory", mode="before")
+    @classmethod
+    def _transfer_root_directory(cls, v: Any):
+        return Path(v)
 
 
 class USStockDefault(BaseModel):
