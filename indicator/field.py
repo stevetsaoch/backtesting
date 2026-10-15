@@ -25,7 +25,7 @@ class IndicatorField(ABC):
 
     def update(
         self, bar: Bar
-    ) -> float | datetime.time | datetime.date | datetime.datetime: ...
+    ) -> float | datetime.time | datetime.date | datetime.datetime | None: ...
 
     @property
     def value(
@@ -35,8 +35,14 @@ class IndicatorField(ABC):
     @abstractmethod
     def reset(self) -> None: ...
 
-    @abstractmethod
-    def _check_bar_spec(self, bar: Bar) -> bool: ...
+    def _check_bar_spec(self, bar: Bar) -> bool:
+        if (
+            f"{bar.bar_type.spec.step}-{bar.bar_type.spec.aggregation}"
+            != self.bar_spec_requirement
+        ):
+            return False
+        else:
+            return True
 
 
 class IntradayOpenField(IndicatorField):
@@ -45,7 +51,9 @@ class IntradayOpenField(IndicatorField):
         self._value_default = float("-inf")
         self._value = float("-inf")
 
-    def update(self, bar: Bar) -> float:
+    def update(self, bar: Bar) -> float | None:
+        if not self._check_bar_spec(bar):
+            return
         if self._value == self._value_default:
             self._value = bar.open.as_double()
         else:
@@ -59,15 +67,6 @@ class IntradayOpenField(IndicatorField):
     def reset(self):
         self._value = self._value_default
 
-    def _check_bar_spec(self, bar: Bar) -> bool:
-        if (
-            f"{bar.bar_type.spec.step}-{bar.bar_type.spec.aggregation}"
-            != self.bar_spec_requirement
-        ):
-            return False
-        else:
-            return True
-
 
 class IntradayHighField(IndicatorField):
     def __init__(self, *args, **kwargs):
@@ -75,7 +74,9 @@ class IntradayHighField(IndicatorField):
         self._value_default = float("-inf")
         self._value = float("-inf")
 
-    def update(self, bar: Bar) -> float:
+    def update(self, bar: Bar) -> float | None:
+        if not self._check_bar_spec(bar):
+            return
         self._value = max(self._value, bar.high.as_double())
         return self._value
 
@@ -86,15 +87,6 @@ class IntradayHighField(IndicatorField):
     def reset(self):
         self._value = self._value_default
 
-    def _check_bar_spec(self, bar: Bar) -> bool:
-        if (
-            f"{bar.bar_type.spec.step}-{bar.bar_type.spec.aggregation}"
-            != self.bar_spec_requirement
-        ):
-            return False
-        else:
-            return True
-
 
 class IntradayLowField(IndicatorField):
     def __init__(self, *args, **kwargs):
@@ -102,7 +94,9 @@ class IntradayLowField(IndicatorField):
         self._value_default = float("inf")
         self._value = float("inf")
 
-    def update(self, bar: Bar) -> float:
+    def update(self, bar: Bar) -> float | None:
+        if not self._check_bar_spec(bar):
+            return
         self._value = min(self._value, bar.low.as_double())
         return self._value
 
@@ -113,15 +107,6 @@ class IntradayLowField(IndicatorField):
     def reset(self):
         self._value = self._value_default
 
-    def _check_bar_spec(self, bar: Bar) -> bool:
-        if (
-            f"{bar.bar_type.spec.step}-{bar.bar_type.spec.aggregation}"
-            != self.bar_spec_requirement
-        ):
-            return False
-        else:
-            return True
-
 
 class IntradayHighUpdatedAtField(IndicatorField):
     def __init__(self, intraday_high: IndicatorField, *args, **kwargs):
@@ -131,7 +116,9 @@ class IntradayHighUpdatedAtField(IndicatorField):
         self._value_default = None
         self._value = None
 
-    def update(self, bar: Bar) -> datetime.time:
+    def update(self, bar: Bar) -> datetime.time | None:
+        if not self._check_bar_spec(bar):
+            return
         current = self._intraday_high.value
         if current != self._last_value:
             self._value = unix_nanos_to_dt(bar.ts_event).time()
@@ -145,15 +132,6 @@ class IntradayHighUpdatedAtField(IndicatorField):
     def reset(self):
         self._value = self._value_default
 
-    def _check_bar_spec(self, bar: Bar) -> bool:
-        if (
-            f"{bar.bar_type.spec.step}-{bar.bar_type.spec.aggregation}"
-            != self.bar_spec_requirement
-        ):
-            return False
-        else:
-            return True
-
 
 class IntradayLowUpdatedAtField(IndicatorField):
     def __init__(self, intraday_low: IndicatorField, *args, **kwargs):
@@ -163,7 +141,9 @@ class IntradayLowUpdatedAtField(IndicatorField):
         self._value_default = None
         self._value = None
 
-    def update(self, bar: Bar) -> datetime.time:
+    def update(self, bar: Bar) -> datetime.time | None:
+        if not self._check_bar_spec(bar):
+            return
         current = self._intraday_low.value
         if current != self._last_value:
             self._value = unix_nanos_to_dt(bar.ts_init).time()
@@ -177,15 +157,6 @@ class IntradayLowUpdatedAtField(IndicatorField):
     def reset(self):
         self._value = self._value_default
 
-    def _check_bar_spec(self, bar: Bar) -> bool:
-        if (
-            f"{bar.bar_type.spec.step}-{bar.bar_type.spec.aggregation}"
-            != self.bar_spec_requirement
-        ):
-            return False
-        else:
-            return True
-
 
 class IntradayTradingValueField(IndicatorField):
     def __init__(self, *args, **kwargs):
@@ -193,7 +164,9 @@ class IntradayTradingValueField(IndicatorField):
         self._value_default = 0.0
         self._value = 0.0
 
-    def update(self, bar: Bar) -> float:
+    def update(self, bar: Bar) -> float | None:
+        if not self._check_bar_spec(bar):
+            return
         price = (
             bar.open.as_double()
             + bar.close.as_double()
@@ -209,15 +182,6 @@ class IntradayTradingValueField(IndicatorField):
 
     def reset(self):
         self._value = self._value_default
-
-    def _check_bar_spec(self, bar: Bar) -> bool:
-        if (
-            f"{bar.bar_type.spec.step}-{bar.bar_type.spec.aggregation}"
-            != self.bar_spec_requirement
-        ):
-            return False
-        else:
-            return True
 
 
 class IntradayAmplitudeField(IndicatorField):
@@ -236,7 +200,9 @@ class IntradayAmplitudeField(IndicatorField):
         self._value_default = float("-inf")
         self._value = float("-inf")
 
-    def update(self, bar: Bar) -> float:
+    def update(self, bar: Bar) -> float | None:
+        if not self._check_bar_spec(bar):
+            return
         self._value = (self._high.value - self._low.value) / self._open.value
         return self._value
 
@@ -247,15 +213,6 @@ class IntradayAmplitudeField(IndicatorField):
     def reset(self):
         self._value = self._value_default
 
-    def _check_bar_spec(self, bar: Bar) -> bool:
-        if (
-            f"{bar.bar_type.spec.step}-{bar.bar_type.spec.aggregation}"
-            != self.bar_spec_requirement
-        ):
-            return False
-        else:
-            return True
-
 
 class IntradayATRField(IndicatorField):
     def __init__(self, *args, **kwargs):
@@ -265,7 +222,9 @@ class IntradayATRField(IndicatorField):
         self.bars = deque(maxlen=self.bar_buffer_size)
         self.atr_n = deque(maxlen=self.bar_buffer_size)
 
-    def update(self, bar: Bar) -> float:
+    def update(self, bar: Bar) -> float | None:
+        if not self._check_bar_spec(bar):
+            return
         self.bars.append(bar)
         self._atr(bar)
         if len(self.atr_n) < self.bar_buffer_size:
@@ -294,12 +253,3 @@ class IntradayATRField(IndicatorField):
             abs(self.bars[-1].low.as_double() - self.bars[-2].close.as_double()),
         )
         self.atr_n.append(tr)
-
-    def _check_bar_spec(self, bar: Bar) -> bool:
-        if (
-            f"{bar.bar_type.spec.step}-{bar.bar_type.spec.aggregation}"
-            != self.bar_spec_requirement
-        ):
-            return False
-        else:
-            return True
